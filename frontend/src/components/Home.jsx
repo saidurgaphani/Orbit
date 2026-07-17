@@ -473,7 +473,7 @@ export default function Home({ userLocation, onNavigateToTab, selectedDate }) {
               [ DIARY SEQUENCE PREVIEW ]
             </span>
             <h3 className="text-sm font-serif font-bold text-charcoal/70">
-              {brief.reflectionPreview?.title || "Tonight EVA will summarize:"}
+              {brief.reflectionPreview?.title || "Tonight Orbit will summarize:"}
             </h3>
             <ul className="text-xs font-sans text-charcoal/50 space-y-1 mt-2 list-disc list-inside">
               {brief.reflectionPreview?.bullets?.map((b, idx) => (

@@ -157,12 +157,12 @@ export default function ScamDetector() {
 
   const handleCopyWarning = () => {
     if (!result) return;
-    const warningText = `[EVA Scam Shield Alert]
+    const warningText = `[Orbit Scam Shield Alert]
 Suspect: ${inputText || inputUrl || 'Attached Screenshot'}
 Threat level: ${result.riskLevel} (${result.score}% Scam Probability)
 Reasons flagged:
 ${(result.indicators || []).map(i => `- ${i.text}`).join('\n')}
-EVA Advice: DO NOT click links, respond, or make payments.`;
+Orbit Advice: DO NOT click links, respond, or make payments.`;
 
     navigator.clipboard.writeText(warningText);
     alert('Scam advisory copied to clipboard!');
@@ -370,7 +370,7 @@ EVA Advice: DO NOT click links, respond, or make payments.`;
             </div>
             
             <div className="font-serif italic text-lg text-charcoal font-semibold mb-3">
-              EVA Scam Shield Radar Analyzing...
+              Orbit Scam Shield Radar Analyzing...
             </div>
             
             <div className="space-y-2.5 max-w-xs mx-auto text-left border-l border-charcoal/20 pl-4">

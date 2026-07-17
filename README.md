@@ -1,8 +1,8 @@
-# EVA — Everyday Virtual Assistant
+# Orbit — Orbit
 
 *"One AI. One Timeline. One Companion. Every Part of Your Life."*
 
-EVA is an AI-powered personal life companion and personal operating system. Rather than treating different areas of a user's life as isolated tabs, EVA brings them together into one intelligent, context-aware system. It parses calendar timelines, local weather, financials, health trends, and personal documents to generate unified life insights and assist in critical daily decisions.
+Orbit is an AI-powered personal life companion and personal operating system. Rather than treating different areas of a user's life as isolated tabs, Orbit brings them together into one intelligent, context-aware system. It parses calendar timelines, local weather, financials, health trends, and personal documents to generate unified life insights and assist in critical daily decisions.
 
 ---
 
@@ -13,7 +13,7 @@ EVA is an AI-powered personal life companion and personal operating system. Rath
 ---
 
 ## Table of Contents
-1. [What is EVA?](#what-is-eva)
+1. [What is Orbit?](#what-is-orbit)
 2. [Problem Statement](#problem-statement)
 3. [Vision & Privacy Guardrails](#vision--privacy-guardrails)
 4. [Core Features & Module Status](#core-features--module-status)
@@ -26,7 +26,7 @@ EVA is an AI-powered personal life companion and personal operating system. Rath
 
 ---
 
-## What is EVA?
+## What is Orbit?
 
 Traditional applications isolate your life details:
 * **Health app** → stores steps and sleep metrics.
@@ -35,11 +35,11 @@ Traditional applications isolate your life details:
 * **Cloud Storage** → archives documents.
 * **Chatbot** → provides generic conversations with no personal context.
 
-EVA is the unified ecosystem layer. By analyzing the relationships between different data points, EVA understands personal lifecycles:
+Orbit is the unified ecosystem layer. By analyzing the relationships between different data points, Orbit understands personal lifecycles:
 
-$$\text{Poor Sleep} + \text{Heavy Workload} + \text{Upcoming Event} + \text{Lagging Goal} \xrightarrow{\text{EVA Copilot}} \text{Proactive Insight}$$
+$$\text{Poor Sleep} + \text{Heavy Workload} + \text{Upcoming Event} + \text{Lagging Goal} \xrightarrow{\text{Orbit Copilot}} \text{Proactive Insight}$$
 
-EVA acts as a context-aware personal intelligence layer that transforms fragmented digital metrics into actionable life strategy recommendations.
+Orbit acts as a context-aware personal intelligence layer that transforms fragmented digital metrics into actionable life strategy recommendations.
 
 ---
 
@@ -50,14 +50,14 @@ Modern personal computing is fragmented. A user's typical daily operations are d
 2. The user is forced to perform manual correlation (e.g. tracking how financial stress affects sleep quality or schedule discipline).
 3. General-purpose AI assistants lack persistent, structured access to this data, leading to generic and ungrounded interactions.
 
-EVA addresses this gap by creating a secure, client-validated aggregator designed to provide cross-domain intelligence.
+Orbit addresses this gap by creating a secure, client-validated aggregator designed to provide cross-domain intelligence.
 
 ---
 
 ## Vision & Privacy Guardrails
 
-EVA's long-term goal is to serve as a secure digital twin. To ensure safety, EVA operates under strict architectural principles:
-* **Strict Permission Scope**: EVA only accesses data categories explicitly consented to by the user (such as Google Calendar read-only access or Google Fit logs).
+Orbit's long-term goal is to serve as a secure digital twin. To ensure safety, Orbit operates under strict architectural principles:
+* **Strict Permission Scope**: Orbit only accesses data categories explicitly consented to by the user (such as Google Calendar read-only access or Google Fit logs).
 * **Data Isolation**: Database reads, writes, vaults, and decision histories are dynamically scoped by the active user's verified session. Data is segregated so no cross-user contamination is possible.
 * **User Control**: Users can wipe their personal document vault, reset their isolated databases, or sign out instantly.
 
@@ -79,7 +79,7 @@ EVA's long-term goal is to serve as a secure digital twin. To ensure safety, EVA
 
 ### 4. AI Decision Engine
 * **Status**: **Implemented**
-* **Capabilities**: Allows users to frame difficult dilemmas (e.g., career moves, large financial investments). EVA analyzes the request in context of the user's current isolated financial balances, goals, and workloads to output a structured recommendation detailing pros, cons, and risk assessments.
+* **Capabilities**: Allows users to frame difficult dilemmas (e.g., career moves, large financial investments). Orbit analyzes the request in context of the user's current isolated financial balances, goals, and workloads to output a structured recommendation detailing pros, cons, and risk assessments.
 * *Note: AI Decision Engine outputs represent mathematical and LLM-assisted options; they do not replace certified financial or medical consultations.*
 
 ### 5. Finance Brain
@@ -99,12 +99,12 @@ EVA's long-term goal is to serve as a secure digital twin. To ensure safety, EVA
 
 ## AI Architecture
 
-EVA implements a structured prompt-orchestrator pattern rather than an open-ended chatbot. The context compilation flows as follows:
+Orbit implements a structured prompt-orchestrator pattern rather than an open-ended chatbot. The context compilation flows as follows:
 
 ```mermaid
 flowchart LR
     UserData[User DB Data] --> Builder[ContextBuilder]
-    UserRequest[User Prompt / File] --> Orchestrator[EVAOrchestrator]
+    UserRequest[User Prompt / File] --> Orchestrator[OrbitOrchestrator]
     Builder --> Orchestrator
     Orchestrator --> Provider[GeminiProvider]
     Provider --> Gemini[Gemini 2.0 Flash API]
@@ -121,7 +121,7 @@ flowchart LR
 
 ## Authentication Architecture
 
-EVA uses **Firebase Authentication** as the identity source of truth. The application follows a fail-secure token validation model:
+Orbit uses **Firebase Authentication** as the identity source of truth. The application follows a fail-secure token validation model:
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +147,7 @@ sequenceDiagram
 ## Database Architecture
 
 ### Current Implementation: Local User-Isolated JSON Store
-To ensure zero configuration setup and rapid local deployment, EVA uses a user-scoped JSON database pattern stored under `backend/data/`:
+To ensure zero configuration setup and rapid local deployment, Orbit uses a user-scoped JSON database pattern stored under `backend/data/`:
 * `users.json`: Stores user records, registration sources, and creation dates.
 * `sessions.json`: Maps active local session tokens to users.
 * `db_${userId}.json`: Scopes all health profiles, goals, habits, and budgets.
@@ -195,7 +195,7 @@ flowchart TD
         API[Express Router] --> AuthGuard[requireAuth Guard]
         AuthGuard --> ALS[AsyncLocalStorage Context]
         ALS --> DB[healthDb.js File Database]
-        ALS --> AIOrch[EVAOrchestrator]
+        ALS --> AIOrch[OrbitOrchestrator]
     end
 
     FBClient -.->|Google OAuth Flow| GoogleAuth[Google Auth Services]

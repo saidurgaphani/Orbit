@@ -68,7 +68,7 @@ export default function ProblemSection() {
             <circle cx="50%" cy="50%" r="24" fill="none" stroke="#375534" strokeWidth="1" opacity="0.2" />
           </svg>
 
-          {/* Central EVA when connected */}
+          {/* Central Orbit when connected */}
           <div
             className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 transition-all duration-1000"
             style={{
@@ -77,14 +77,14 @@ export default function ProblemSection() {
             }}
           >
             <div className="border-2 border-forest bg-alabaster px-6 py-4 text-center">
-              <span className="text-lg font-serif font-black">EVA</span>
+              <span className="text-lg font-serif font-black">Orbit</span>
             </div>
           </div>
         </div>
 
         <ScrollReveal className="mt-16 md:mt-24 text-center" delay={200}>
           <p className="text-2xl md:text-4xl font-serif font-semibold text-forest">
-            EVA brings the context together.
+            Orbit brings the context together.
           </p>
         </ScrollReveal>
       </div>

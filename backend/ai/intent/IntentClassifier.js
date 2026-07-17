@@ -45,7 +45,7 @@ export default class IntentClassifier {
       required_sources = ['goals'];
     }
 
-    const systemInstruction = `You are an AI Intent Classifier for EVA (Everyday Virtual Assistant).
+    const systemInstruction = `You are an AI Intent Classifier for Orbit (Orbit).
 Your job is to classify the user's input query into exactly one of the following intents:
 - MORNING_BRIEF: User wants a daily brief or dashboard update.
 - HEALTH_ANALYSIS: Queries about sleep, steps, water, workouts, or physiological data.

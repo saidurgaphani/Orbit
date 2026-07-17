@@ -415,7 +415,7 @@ export default function GoalEngine({ onNavigateToTab, selectedDate }) {
           <span className="text-xs uppercase font-semibold tracking-wider text-forest block mb-2">[ STRATEGIC INTELLIGENCE MODULE ]</span>
           <h2 className="text-4xl font-serif font-black leading-none tracking-tight">Goal Engine</h2>
           <p className="text-sm text-charcoal/60 font-sans mt-2 max-w-lg leading-relaxed">
-            Turn your ambitions into a system. EVA builds your plan, tracks your habits, detects drift, and adapts to real life.
+            Turn your ambitions into a system. Orbit builds your plan, tracks your habits, detects drift, and adapts to real life.
           </p>
         </div>
         <div className="flex flex-col gap-2 shrink-0">
@@ -659,7 +659,7 @@ export default function GoalEngine({ onNavigateToTab, selectedDate }) {
                           <div className="mt-5 border border-amber-500/20 bg-amber-500/[0.02] p-4 flex gap-3">
                             <BrainCircuit className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                             <p className="text-xs font-sans text-amber-800 leading-relaxed">
-                              <strong>EVA Forecast:</strong> At your current pace, completion is estimated for{' '}
+                              <strong>Orbit Forecast:</strong> At your current pace, completion is estimated for{' '}
                               <strong>{new Date(selectedGoal.predictedCompletionDate).toLocaleDateString('en-IN', { month: 'long', day: 'numeric', year: 'numeric' })}</strong>
                               {' '}— vs your target of{' '}
                               <strong>{new Date(selectedGoal.targetDate).toLocaleDateString('en-IN', { month: 'long', day: 'numeric', year: 'numeric' })}</strong>.
@@ -783,7 +783,7 @@ export default function GoalEngine({ onNavigateToTab, selectedDate }) {
                   {creating && (
                     <div className="py-8 text-center space-y-4">
                       <BrainCircuit className="w-10 h-10 text-charcoal mx-auto animate-pulse" />
-                      <p className="font-serif italic text-charcoal/70">EVA is building your plan...</p>
+                      <p className="font-serif italic text-charcoal/70">Orbit is building your plan...</p>
                       <div className="space-y-2.5 max-w-xs mx-auto text-left border-l border-charcoal/25 pl-4">
                         {[
                           '1. Understanding your goal',

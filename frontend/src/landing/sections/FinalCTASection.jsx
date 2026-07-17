@@ -13,13 +13,13 @@ export default function FinalCTASection() {
 
         <ScrollReveal direction="up" delay={150}>
           <p className="mt-6 text-xl md:text-2xl font-serif text-charcoal/60">
-            Let EVA help you understand them.
+            Let Orbit help you understand them.
           </p>
         </ScrollReveal>
 
         <ScrollReveal direction="up" delay={300}>
           <div className="mt-12 flex flex-col sm:flex-row items-center justify-center gap-4">
-            <PrimaryButton to="/app">Enter EVA</PrimaryButton>
+            <PrimaryButton to="/app">Enter Orbit</PrimaryButton>
             <SecondaryButton href="#system">Explore the system</SecondaryButton>
           </div>
         </ScrollReveal>
@@ -27,7 +27,7 @@ export default function FinalCTASection() {
         <ScrollReveal direction="fade" delay={500}>
           <div className="mt-24 pt-8 border-t border-charcoal/10">
             <p className="text-[10px] uppercase tracking-widest font-semibold text-charcoal/30">
-              EVA — Everyday Virtual Assistant
+              Orbit — Orbit
             </p>
             <p className="text-[10px] text-charcoal/20 mt-2 font-sans">
               Showcase content for demonstration purposes. Not connected to live user data.

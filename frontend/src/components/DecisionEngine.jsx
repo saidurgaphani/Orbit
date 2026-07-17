@@ -202,7 +202,7 @@ function ScenarioCard({ scenario, isRecommended, color }) {
     <div className={`border p-5 bg-alabaster relative ${isRecommended ? 'border-forest shadow-[3px_3px_0px_0px_rgba(68,107,79,0.3)]' : 'border-charcoal/30'}`}>
       {isRecommended && (
         <span className="absolute -top-2.5 left-4 bg-forest text-alabaster text-[9px] uppercase font-bold tracking-wider px-2 py-0.5">
-          EVA Recommends
+          Orbit Recommends
         </span>
       )}
       <div className="text-xs font-bold uppercase tracking-wider text-charcoal/60 mb-2">[ {scenario.label?.toUpperCase()} ]</div>
@@ -373,7 +373,7 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
                 <span>Glad this helped!</span>
               </>
             ) : (
-              <span>Thank you — EVA will improve.</span>
+              <span>Thank you — Orbit will improve.</span>
             )}
           </span>
         </div>
@@ -699,7 +699,7 @@ export default function DecisionEngine({ onNavigateToTab }) {
       {/* ── HOW IT WORKS FOOTER ── */}
       {!result && !loading && (
         <div className="border border-dashed border-charcoal/20 p-5 bg-alabaster">
-          <div className="text-xs uppercase font-bold tracking-wider text-charcoal/40 mb-3">[ HOW EVA DECIDES ]</div>
+          <div className="text-xs uppercase font-bold tracking-wider text-charcoal/40 mb-3">[ HOW Orbit DECIDES ]</div>
           <div className="grid grid-cols-3 gap-4 text-center">
             {[
               { icon: '🔍', step: 'Understand', desc: 'Classify question & gather relevant live data from all modules' },

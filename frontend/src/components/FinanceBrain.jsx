@@ -724,7 +724,7 @@ export default function FinanceBrain({ selectedDate }) {
                 </div>
 
                 <div className="border border-forest p-4 bg-forest/5 text-xs text-forest font-serif leading-relaxed">
-                  <span className="font-bold uppercase font-sans text-[10px] tracking-wider block mb-1">EVA RECOMENDED PATHWAYS:</span>
+                  <span className="font-bold uppercase font-sans text-[10px] tracking-wider block mb-1">Orbit RECOMENDED PATHWAYS:</span>
                   "{affordResult.recommendation}"
                 </div>
               </div>

@@ -24,7 +24,7 @@ export default function MemorySection() {
         <ScrollReveal className="mb-16 md:mb-24">
           <SectionLabel>MEMORY</SectionLabel>
           <h2 className="text-3xl md:text-5xl font-serif font-black tracking-tight mt-4 leading-tight">
-            EVA remembers what matters.
+            Orbit remembers what matters.
           </h2>
         </ScrollReveal>
 

@@ -128,7 +128,7 @@ export default function LifeMapVisual({ className = '' }) {
           </g>
         ))}
 
-        {/* Central EVA node */}
+        {/* Central Orbit node */}
         <circle cx="50" cy="50" r="4" fill="#FBFBF9" stroke="#1E201E" strokeWidth="0.25" />
         <circle cx="50" cy="50" r="2.5" fill="#375534" opacity="0.15" />
         <text
@@ -141,7 +141,7 @@ export default function LifeMapVisual({ className = '' }) {
           fontWeight="900"
           opacity="0.7"
         >
-          EVA
+          Orbit
         </text>
       </svg>
     </div>

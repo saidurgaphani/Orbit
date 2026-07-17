@@ -30,16 +30,16 @@ export default function HeroSection() {
             <ScrollReveal direction="fade" delay={0}>
               <div className="space-y-1">
                 <h2 className="text-5xl md:text-7xl font-serif font-black tracking-tight leading-[0.95]">
-                  EVA
+                  Orbit
                 </h2>
                 <p className="text-xs uppercase tracking-[0.25em] font-semibold text-forest">
-                  Everyday Virtual Assistant
+                  Orbit
                 </p>
               </div>
             </ScrollReveal>
 
             <ScrollReveal direction="up" delay={150}>
-              <PrimaryButton to="/app">Enter EVA</PrimaryButton>
+              <PrimaryButton to="/app">Enter Orbit</PrimaryButton>
             </ScrollReveal>
           </div>
 
@@ -55,7 +55,7 @@ export default function HeroSection() {
 
             <ScrollReveal direction="up" delay={350}>
               <p className="text-base md:text-lg text-charcoal/70 font-sans max-w-lg leading-relaxed">
-                EVA is an intelligent companion that helps you understand what is
+                Orbit is an intelligent companion that helps you understand what is
                 happening in your life, what needs your attention, and what you can do next.
               </p>
             </ScrollReveal>

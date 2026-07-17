@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, RefreshCw, AlertTriangle } from 'lucide-react';
+import { auth } from '../firebase';
 
 const BACKEND = 'http://localhost:5001';
 
@@ -80,6 +81,20 @@ export default function HealthIntelligence({ selectedDate }) {
     fetchData(true);
   }, [selectedDate]);
 
+  const handleInitiateOAuth = async () => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        alert('Authentication session is missing. Please sign in again.');
+        return;
+      }
+      window.location.href = `${BACKEND}/auth/google?token=${idToken}&referer=${encodeURIComponent(window.location.href)}`;
+    } catch (err) {
+      console.error('Failed to get Firebase token for Google OAuth:', err);
+      alert('Failed to connect to Google Account.');
+    }
+  };
+
   // Trigger Google Fit / Health Connect real or mock sync
   const handleSync = async (type) => {
     setSyncing(true);
@@ -96,7 +111,8 @@ export default function HealthIntelligence({ selectedDate }) {
         const errData = await res.json().catch(() => ({}));
         if (res.status === 401 && errData.error === 'unlinked') {
           if (window.confirm('Google Account is not linked. Redirect to Google authentication to link and grant Fit permissions?')) {
-            window.location.href = `${BACKEND}/auth/google`;
+            const idToken = await auth.currentUser?.getIdToken();
+            window.location.href = `${BACKEND}/auth/google?token=${idToken}`;
             return;
           }
           throw new Error('Sync cancelled: Google Account not linked.');
@@ -437,7 +453,7 @@ export default function HealthIntelligence({ selectedDate }) {
 
           {/* Stacked Bars */}
           {values.map((totalHrs, idx) => {
-            const details = sleepDetails[idx] || { deep: 80, rem: 80, light: 242 };
+            const details = sleepDetails[idx] || { deep: 0, rem: 0, light: 0 };
             const deepHrs = details.deep / 60;
             const remHrs = details.rem / 60;
             const lightHrs = details.light / 60;
@@ -604,25 +620,18 @@ export default function HealthIntelligence({ selectedDate }) {
           </button>
           
           <div className="flex flex-wrap gap-2">
-            <a
-              href={`${BACKEND}/auth/google`}
+            <button
+              onClick={handleInitiateOAuth}
               className="border border-charcoal hover:border-forest text-charcoal hover:text-forest px-4 py-2 text-xs uppercase font-bold tracking-wider transition-colors inline-block"
             >
               Link Google (Real Fit)
-            </a>
+            </button>
             <button
               onClick={() => handleSync('real')}
               disabled={syncing}
               className="border border-charcoal hover:border-forest text-charcoal hover:text-forest px-4 py-2 text-xs uppercase font-bold tracking-wider transition-colors"
             >
               {syncing ? 'Syncing...' : 'Sync Real Fit'}
-            </button>
-            <button
-              onClick={() => handleSync('mock')}
-              disabled={syncing}
-              className="bg-charcoal text-alabaster border border-charcoal hover:bg-forest hover:border-forest px-4 py-2 text-xs uppercase font-bold tracking-wider transition-colors"
-            >
-              {syncing ? 'Syncing...' : 'Sync Mock Data'}
             </button>
           </div>
         </div>
@@ -1094,7 +1103,7 @@ export default function HealthIntelligence({ selectedDate }) {
             {reportLoading && (
               <div className="border border-dashed border-charcoal p-6 text-center animate-pulse">
                 <div className="font-serif italic text-sm text-charcoal/80 mb-1">Scanning lab sheets & biomarkers...</div>
-                <div className="text-[9px] uppercase tracking-widest text-charcoal/40 font-mono">Routing structure to EVA intelligence core</div>
+                <div className="text-[9px] uppercase tracking-widest text-charcoal/40 font-mono">Routing structure to Orbit intelligence core</div>
               </div>
             )}
 

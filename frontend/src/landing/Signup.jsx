@@ -59,8 +59,9 @@ export default function Signup() {
         
         {/* Logo and Headings */}
         <div className="text-center space-y-2 mb-8">
-          <Link to="/" className="inline-block hover:opacity-85 transition-opacity">
-            <h1 className="text-5xl font-serif font-black tracking-tighter uppercase leading-none">EVA</h1>
+          <Link to="/" className="inline-flex flex-col items-center hover:opacity-85 transition-opacity">
+            <img src="/orbit.png" alt="Orbit Logo" className="w-16 h-16 object-contain mb-2" />
+            <h1 className="text-5xl font-serif font-black tracking-tighter uppercase leading-none">Orbit</h1>
           </Link>
           <div className="w-12 h-[1px] bg-charcoal mx-auto my-3"></div>
           <p className="text-[10px] font-mono uppercase tracking-[0.2em] font-bold text-forest">

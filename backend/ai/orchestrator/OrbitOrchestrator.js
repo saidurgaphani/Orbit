@@ -4,7 +4,7 @@ import ContextBuilder from '../context/ContextBuilder.js';
 import OutputValidator from '../validators/OutputValidator.js';
 import { readDb } from '../../healthDb.js';
 
-export default class EVAOrchestrator {
+export default class OrbitOrchestrator {
   constructor(apiKey = process.env.GEMINI_API_KEY) {
     this.provider = new GeminiProvider(apiKey);
     this.classifier = new IntentClassifier(this.provider);
@@ -62,7 +62,7 @@ IMPORTANT: Return ONLY a raw JSON object. Do NOT wrap in markdown code blocks (\
 `;
 
     console.log(`[Orchestrator] Sending request to Gemini with instruction...`);
-    let rawResponse = await this.provider.generate(promptText, "You are the EVA reasoning core. Return only a JSON object. No markdown. No backticks.");
+    let rawResponse = await this.provider.generate(promptText, "You are the Orbit reasoning core. Return only a JSON object. No markdown. No backticks.");
 
     let parsedJSON;
     try {
@@ -73,7 +73,7 @@ IMPORTANT: Return ONLY a raw JSON object. Do NOT wrap in markdown code blocks (\
       parsedJSON = JSON.parse(cleanText.trim());
     } catch (parseError) {
       console.error('[Orchestrator] Initial JSON parsing failed:', parseError);
-      parsedJSON = await this.provider.generateStructured(promptText, "You are the EVA reasoning core. Return only a JSON object.");
+      parsedJSON = await this.provider.generateStructured(promptText, "You are the Orbit reasoning core. Return only a JSON object.");
     }
 
     console.log(`[Orchestrator] Validating structured output for intent: ${intent}...`);
@@ -90,7 +90,7 @@ ${JSON.stringify(parsedJSON, null, 2)}
 Please correct the JSON and return it.
 `;
       try {
-        parsedJSON = await this.provider.generateStructured(repairPrompt, "You are the EVA reasoning core. Return only a JSON object matching the required schema.");
+        parsedJSON = await this.provider.generateStructured(repairPrompt, "You are the Orbit reasoning core. Return only a JSON object matching the required schema.");
         validation = OutputValidator.validate(intent, parsedJSON);
         if (!validation.valid) {
           console.error('[Orchestrator] Repair validation failed. Gracefully returning last output.');

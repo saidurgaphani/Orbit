@@ -67,7 +67,7 @@ export default function LifeScoreSection() {
 
         <ScrollReveal className="mt-16 md:mt-24 max-w-2xl" delay={400}>
           <p className="text-charcoal/60 font-sans leading-relaxed">
-            EVA looks at patterns across your life to help you understand what needs attention.
+            Orbit looks at patterns across your life to help you understand what needs attention.
             Not a gamification gimmick — a summary of life context.
           </p>
         </ScrollReveal>

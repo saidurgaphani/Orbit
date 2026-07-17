@@ -94,7 +94,7 @@ const ALL_FEATURES = [
     id: 'persona',
     name: 'Personality Modes',
     category: 'INTERFACE',
-    description: 'Switch EVA between professional, casual, mentor, or drill-sergeant.',
+    description: 'Switch Orbit between professional, casual, mentor, or drill-sergeant.',
     isReal: false,
     mockSummary: 'Current mode: Professional & Concise. Tone drift is zero. Empathy parameter set to low.',
     mockData: [
@@ -108,7 +108,7 @@ const ALL_FEATURES = [
     category: 'INTERFACE',
     description: 'Always-on, low-latency conversational audio interface.',
     isReal: false,
-    mockSummary: 'Microphone hardware linked. Wake word "Hey EVA" is active with 99.8% precision.',
+    mockSummary: 'Microphone hardware linked. Wake word "Hey Orbit" is active with 99.8% precision.',
     mockData: [
       { title: 'Last Session', detail: '14-minute conversation during morning commute. Action items extracted.' },
       { title: 'Latency', detail: 'Average end-to-end voice response time: 240ms.' }

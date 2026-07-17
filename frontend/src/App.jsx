@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
+import { auth } from './firebase';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -30,6 +31,7 @@ import DecisionEngine from './components/DecisionEngine';
 import FinanceBrain from './components/FinanceBrain';
 import HealthIntelligence from './components/HealthIntelligence';
 import GoalEngine from './components/GoalEngine';
+import OnboardingWizard from './components/OnboardingWizard';
 
 
 const BACKEND = 'http://localhost:5001';
@@ -75,6 +77,20 @@ function LiveSidebar({ activeTab, onNavigateToTab, userLocation, isOpen, onToggl
       setCalendarLinked(false);
     }
   }, []);
+
+  const handleLinkCalendar = async () => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        alert('Authentication session is missing. Please sign in again.');
+        return;
+      }
+      window.location.href = `${BACKEND}/auth/google?token=${idToken}&referer=${encodeURIComponent(window.location.href)}`;
+    } catch (err) {
+      console.error('Failed to get Firebase token for Google OAuth:', err);
+      alert('Failed to connect to Google Account.');
+    }
+  };
 
   useEffect(() => {
     fetchWeather();
@@ -211,12 +227,12 @@ function LiveSidebar({ activeTab, onNavigateToTab, userLocation, isOpen, onToggl
               <p className="text-xs font-serif italic text-charcoal/60 mb-3">
                 Link Google Calendar to see today's schedule.
               </p>
-              <a
-                href="http://localhost:5001/auth/google"
+              <button
+                onClick={handleLinkCalendar}
                 className="bg-charcoal text-alabaster px-4 py-1.5 uppercase text-[10px] font-bold tracking-wider hover:bg-forest transition-colors border border-charcoal inline-block hover:-translate-y-0.5 transition-transform"
               >
                 LINK GOOGLE CALENDAR
-              </a>
+              </button>
             </div>
           ) : events.length === 0 ? (
             <p className="text-xs font-serif italic text-charcoal/50">No events scheduled for today.</p>
@@ -296,7 +312,7 @@ function LiveSidebar({ activeTab, onNavigateToTab, userLocation, isOpen, onToggl
         {/* Footer */}
         <div className="pt-3 text-center lg:text-left shrink-0">
           <span className="text-[10px] uppercase tracking-wider font-semibold text-charcoal/40">
-            EVA &copy; 2026 — COGNITIVE SYSTEMS CO.
+            Orbit &copy; 2026 — COGNITIVE SYSTEMS CO.
           </span>
         </div>
       </div>
@@ -333,6 +349,33 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [userLocation, setUserLocation] = useState(null); // null = detecting
   const [sidebarUserOverride, setSidebarUserOverride] = useState(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      const onboarded = localStorage.getItem('orbit_onboarded_' + user.id) === 'true';
+      const params = new URLSearchParams(window.location.search);
+      const isLinked = params.get('calendar') === 'linked';
+
+      if (isLinked) {
+        localStorage.setItem('orbit_onboarded_' + user.id, 'true');
+        setShowOnboarding(false);
+        // Automatically sync real data from backend
+        fetch(`${BACKEND}/health/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: 'google-fit', type: 'real' })
+        }).then(() => {
+          // Trigger a reload or navigation tab change to update UI
+          window.location.reload();
+        }).catch(err => console.error('Auto sync failed:', err));
+        
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (!onboarded) {
+        setShowOnboarding(true);
+      }
+    }
+  }, [user]);
 
   // Global Date Context State
   const todayStr = new Date().toISOString().split('T')[0];
@@ -436,11 +479,12 @@ export default function App() {
 
       {/* Editorial Header */}
       <header className="border-b border-charcoal py-4 px-6 md:px-12 flex flex-row justify-between items-center gap-4 bg-alabaster shrink-0">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <img src="/orbit.png" alt="Orbit Logo" className="w-10 h-10 object-contain" />
           <div>
-            <h1 className="text-4xl font-serif font-black tracking-tight leading-none">EVA</h1>
+            <h1 className="text-4xl font-serif font-black tracking-tight leading-none">Orbit</h1>
             <span className="text-xs uppercase tracking-widest font-semibold text-forest mt-1 block">
-              EVERYDAY VIRTUAL ASSISTANT &bull; PLATFORM LAYER
+              Orbit &bull; PLATFORM LAYER
             </span>
           </div>
         </div>
@@ -531,6 +575,16 @@ export default function App() {
         </section>
 
       </main>
+
+      {showOnboarding && (
+        <OnboardingWizard
+          user={user}
+          onComplete={() => {
+            localStorage.setItem('orbit_onboarded_' + user.id, 'true');
+            setShowOnboarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }

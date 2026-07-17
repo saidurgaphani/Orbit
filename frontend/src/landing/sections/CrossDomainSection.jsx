@@ -15,10 +15,10 @@ export default function CrossDomainSection() {
         <ScrollReveal className="mb-16 md:mb-24">
           <SectionLabel>CROSS-DOMAIN INTELLIGENCE</SectionLabel>
           <h2 className="text-3xl md:text-5xl font-serif font-black tracking-tight mt-4 leading-tight">
-            EVA notices relationships.
+            Orbit notices relationships.
           </h2>
           <p className="mt-4 text-charcoal/60 font-sans max-w-lg">
-            EVA does not only answer questions. EVA connects signals across different areas of your life.
+            Orbit does not only answer questions. Orbit connects signals across different areas of your life.
           </p>
         </ScrollReveal>
 
@@ -49,7 +49,7 @@ export default function CrossDomainSection() {
               <div className="flex flex-col items-center gap-2">
                 <div className="w-px h-8 bg-charcoal/20" />
                 <span className="text-[10px] uppercase font-bold tracking-widest text-forest">
-                  EVA Insight
+                  Orbit Insight
                 </span>
                 <div className="w-px h-8 bg-charcoal/20" />
               </div>

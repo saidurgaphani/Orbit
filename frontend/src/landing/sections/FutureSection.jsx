@@ -5,7 +5,7 @@ const TIMELINE = [
   {
     phase: 'TODAY',
     title: 'Understand your life.',
-    description: 'EVA connects your health, finances, goals, and documents into one coherent view.',
+    description: 'Orbit connects your health, finances, goals, and documents into one coherent view.',
   },
   {
     phase: 'NEXT',

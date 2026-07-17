@@ -80,7 +80,7 @@ export default function MockFeatureView({ feature, onBack }) {
                   Interactive UI Reserved
                 </h4>
                 <p className="text-xs text-charcoal/40 max-w-[200px]">
-                  Direct input mechanisms for this module are currently handled by the global EVA orchestrator.
+                  Direct input mechanisms for this module are currently handled by the global Orbit orchestrator.
                 </p>
               </div>
             </div>

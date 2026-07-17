@@ -7,19 +7,22 @@ import { google } from 'googleapis';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { readDb, writeDb, calculateHealthScore } from './healthDb.js';
+import { readDb, writeDb, calculateHealthScore, getUserGoogleTokens, saveUserGoogleTokens } from './healthDb.js';
 import { authStorage } from './authStore.js';
 import crypto from 'crypto';
-import EVAOrchestrator from './ai/orchestrator/EVAOrchestrator.js';
+import OrbitOrchestrator from './ai/orchestrator/OrbitOrchestrator.js';
 import { db } from './db/index.js';
 import * as dbSchema from './db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, not, inArray, desc } from 'drizzle-orm';
 
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 dotenv.config();
+
+const MAX_DOC_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_VAULT_DOCS = 100;
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -102,7 +105,9 @@ app.use((req, res, next) => {
     '/api/auth/session',
     '/api/auth/logout',
     '/api/auth/google',
-    '/api/auth/google/callback'
+    '/api/auth/google/callback',
+    '/auth/google',
+    '/auth/google/callback'
   ];
   
   if (publicPaths.includes(req.path)) {
@@ -127,10 +132,10 @@ let orchestrator = null;
 if (process.env.GEMINI_API_KEY) {
   console.log('Gemini API key detected. Initializing Gemini client...');
   googleGenAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  orchestrator = new EVAOrchestrator(process.env.GEMINI_API_KEY);
+  orchestrator = new OrbitOrchestrator(process.env.GEMINI_API_KEY);
 } else {
-  console.log('No Gemini API key detected. Initializing fallback EVAOrchestrator...');
-  orchestrator = new EVAOrchestrator(null);
+  console.log('No Gemini API key detected. Initializing fallback OrbitOrchestrator...');
+  orchestrator = new OrbitOrchestrator(null);
 }
 
 // ─── GOOGLE OAUTH CLIENT ─────────────────────────────────────────────────────
@@ -139,36 +144,35 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = 'http://localhost:5001/auth/google/callback';
 
-let oauth2Client = null;
+if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+  console.warn('GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set. Calendar OAuth will be unavailable.');
+}
 
-if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
-  console.log('Google OAuth credentials detected. Initializing OAuth2 client...');
-  oauth2Client = new google.auth.OAuth2(
+// In-memory OAuth state mapping cache to prevent CSRF and identify starting users
+const oauthStates = {}; // key: state token, value: { firebaseUid, referer, createdAt }
+
+// Dynamically construct an authorized OAuth2 client for a specific user
+const getOAuth2ClientForUser = async (firebaseUid) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return null;
+  const client = new google.auth.OAuth2(
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI
   );
-} else {
-  console.warn('GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set. Calendar OAuth will be unavailable.');
-}
-
-// Store tokens — persisted to disk so they survive backend restarts
-const TOKEN_FILE = path.join(__dirname, '.calendar_token.json');
-let calendarTokens = null;
-
-try {
-  if (fs.existsSync(TOKEN_FILE)) {
-    calendarTokens = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-    if (oauth2Client && calendarTokens) {
-      oauth2Client.setCredentials(calendarTokens);
-      console.log('Google Calendar token loaded from disk.');
-    }
-  }
-} catch (e) {
-  console.warn('Could not load saved calendar token:', e.message);
-}
-
-// ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
+  
+  const tokens = await getUserGoogleTokens(firebaseUid);
+  if (!tokens) return null;
+  
+  client.setCredentials(tokens);
+  
+  // Register a dynamic event listener to auto-persist refreshed access tokens to Neon PostgreSQL
+  client.on('tokens', async (newTokens) => {
+    console.log(`Google API client auto-refreshed credentials for Firebase user: ${firebaseUid}`);
+    await saveUserGoogleTokens(firebaseUid, newTokens);
+  });
+  
+  return client;
+};
 
 app.get('/health', (req, res) => {
   res.json({
@@ -176,8 +180,7 @@ app.get('/health', (req, res) => {
     providers: {
       anthropic: !!anthropic,
       gemini: !!googleGenAI,
-      googleCalendar: !!oauth2Client,
-      calendarLinked: !!calendarTokens
+      googleCalendar: !!GOOGLE_CLIENT_ID
     }
   });
 });
@@ -325,7 +328,7 @@ app.post('/api/auth/session', async (req, res) => {
   saveSessions();
 
   res.setHeader('Set-Cookie', `session_token=${sessionToken}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly`);
-  res.json({ success: true, user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl } });
+  res.json({ success: true, authenticated: true, user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl } });
 });
 
 // Logout
@@ -342,11 +345,37 @@ app.post('/api/auth/logout', (req, res) => {
 // ─── GOOGLE CALENDAR OAUTH ROUTES ────────────────────────────────────────────
 
 // Step 1: Redirect user to Google consent screen
-app.get('/auth/google', (req, res) => {
-  if (!oauth2Client) {
-    return res.status(503).json({ error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env.' });
+app.get('/auth/google', async (req, res) => {
+  const { token } = req.query;
+  if (!token) {
+    return res.status(401).send('Authentication token required to connect Google Account.');
   }
-  const authUrl = oauth2Client.generateAuthUrl({
+
+  const firebaseUser = await verifyFirebaseIdToken(token);
+  if (!firebaseUser) {
+    return res.status(401).send('Invalid or expired authentication token.');
+  }
+
+  const firebaseUid = firebaseUser.localId;
+  const referer = req.query.referer || req.headers.referer || 'http://localhost:5174/app';
+
+  // Generate a cryptographically secure, random state token
+  const state = crypto.randomBytes(32).toString('hex');
+  
+  // Cache the mapping between this state, user identity, and destination referer
+  oauthStates[state] = {
+    firebaseUid,
+    referer,
+    createdAt: Date.now()
+  };
+
+  const client = new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
+
+  const authUrl = client.generateAuthUrl({
     access_type: 'offline',
     scope: [
       'https://www.googleapis.com/auth/calendar.readonly',
@@ -355,48 +384,70 @@ app.get('/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/fitness.heart_rate.read',
       'https://www.googleapis.com/auth/fitness.sleep.read'
     ],
-    prompt: 'consent'
+    prompt: 'consent',
+    state: state
   });
+
   res.redirect(authUrl);
 });
 
 // Step 2: Google redirects back here with a code
 app.get('/auth/google/callback', async (req, res) => {
-  if (!oauth2Client) {
-    return res.status(503).send('OAuth not configured.');
+  const { code, error, state } = req.query;
+  
+  // Retrieve the state mapping
+  const stateData = state ? oauthStates[state] : null;
+  if (!stateData) {
+    return res.status(400).send('Invalid, expired, or missing OAuth state parameter. Please try again.');
   }
-  const { code, error } = req.query;
+
+  // Clear state mapping from cache (single-use token check)
+  delete oauthStates[state];
+
+  const { firebaseUid, referer } = stateData;
+  const finalUrl = new URL(referer);
+
   if (error) {
-    return res.redirect(`http://localhost:5173/?calendar=error&reason=${encodeURIComponent(error)}`);
+    console.error('Google authorization error:', error);
+    finalUrl.searchParams.set('calendar', 'error');
+    finalUrl.searchParams.set('reason', error);
+    return res.redirect(finalUrl.toString());
   }
+
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
-    calendarTokens = tokens;
-    // Persist to disk so restarts don't require re-auth
-    try {
-      fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
-    } catch (writeErr) {
-      console.warn('Could not persist calendar token:', writeErr.message);
-    }
-    console.log('Google Calendar linked successfully.');
-    res.redirect('http://localhost:5173/?calendar=linked');
+    const client = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      GOOGLE_REDIRECT_URI
+    );
+
+    const { tokens } = await client.getToken(code);
+    
+    // Save tokens securely in database associated with this Firebase Uid
+    await saveUserGoogleTokens(firebaseUid, tokens);
+    
+    console.log(`Successfully completed Google OAuth and saved tokens for user: ${firebaseUid}`);
+    
+    finalUrl.searchParams.set('calendar', 'linked');
+    res.redirect(finalUrl.toString());
   } catch (err) {
     console.error('Token exchange error:', err.message);
-    res.redirect(`http://localhost:5173/?calendar=error&reason=${encodeURIComponent(err.message)}`);
+    finalUrl.searchParams.set('calendar', 'error');
+    finalUrl.searchParams.set('reason', err.message);
+    res.redirect(finalUrl.toString());
   }
 });
 
 // Step 3: Return today's calendar events as JSON
 app.get('/calendar/events', async (req, res) => {
-  if (!oauth2Client || !calendarTokens) {
+  const client = await getOAuth2ClientForUser(req.userId);
+  if (!client) {
     // Return empty placeholder so the UI can handle the unlinked state gracefully
     return res.json({ linked: false, events: [] });
   }
 
   try {
-    oauth2Client.setCredentials(calendarTokens);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendar = google.calendar({ version: 'v3', auth: client });
 
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
@@ -430,8 +481,7 @@ app.get('/calendar/events', async (req, res) => {
 
     // Token expired or revoked
     if (status === 401 || errMsg.includes('invalid_grant') || errMsg.includes('token expired')) {
-      calendarTokens = null;
-      try { fs.unlinkSync(TOKEN_FILE); } catch {}
+      await saveUserGoogleTokens(req.userId, null);
       return res.json({ linked: false, events: [], reason: 'token_expired', message: 'Your Google Calendar session expired. Please re-link.' });
     }
 
@@ -507,7 +557,7 @@ function formatSleepDuration(mins) {
 }
 
 app.get('/home/dashboard', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
 
   // Return cached brief if available in db.morningBriefs for the target date
@@ -520,7 +570,7 @@ app.get('/home/dashboard', async (req, res) => {
 });
 
 app.post('/home/generate', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const targetDateStr = req.query.date || req.body.date || new Date().toISOString().split('T')[0];
   
   if (db.morningBriefs) {
@@ -600,10 +650,10 @@ async function generateBriefInternal(req, res, db, todayStr, forceRegen = false)
 
     // Google Calendar events
     let calendarEvents = [];
-    if (calendarTokens) {
+    const client = await getOAuth2ClientForUser(req.userId);
+    if (client) {
       try {
-        oauth2Client.setCredentials(calendarTokens);
-        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+        const calendar = google.calendar({ version: 'v3', auth: client });
         const start = new Date();
         start.setHours(0, 0, 0, 0);
         const end = new Date();
@@ -687,7 +737,7 @@ async function generateBriefInternal(req, res, db, todayStr, forceRegen = false)
         };
 
         const systemPrompt = `
-You are EVA's Morning Brief reasoning core. Return a personalized greeting, a warm welcoming sentence based on context, top 3 priorities for today, and 3-5 actionable recommendations.
+You are Orbit's Morning Brief reasoning core. Return a personalized greeting, a warm welcoming sentence based on context, top 3 priorities for today, and 3-5 actionable recommendations.
 Order priorities by urgency (due date, importance).
 Ensure recommendations are highly personalized and refer to the specific numbers in health, finance, learning, or documents (e.g. refer to the interview time, specific bill amount, sleep hours, or remaining budget).
 Return ONLY valid JSON in this exact structure:
@@ -722,7 +772,7 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
             model: 'claude-3-5-sonnet-20241022',
             max_tokens: 1024,
             temperature: 0.1,
-            system: "You are the EVA reasoning core. Return only a JSON object. No markdown.",
+            system: "You are the Orbit reasoning core. Return only a JSON object. No markdown.",
             messages: [{ role: 'user', content: promptText }],
           });
           responseText = message.content[0].text;
@@ -733,7 +783,7 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
           });
           const result = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: promptText }] }],
-            systemInstruction: "You are the EVA reasoning core. Return only a JSON object. No markdown."
+            systemInstruction: "You are the Orbit reasoning core. Return only a JSON object. No markdown."
           });
           responseText = result.response.text();
         }
@@ -961,7 +1011,7 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
       })),
       dailyChallenge: db.dailyChallenge || { title: 'Walk 10,000 Steps', reward: '+5 Health Score' },
       reflectionPreview: {
-        title: "Tonight EVA will summarize:",
+        title: "Tonight Orbit will summarize:",
         bullets: [
           "Health logs & Sleep quality",
           "Day's expenses vs daily allowance",
@@ -989,7 +1039,7 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
       updated_at: new Date().toISOString()
     };
 
-    await writeDb(db, true);
+    await writeDb(req.userId, db, true);
     res.json(responsePayload);
 
   } catch (err) {
@@ -1000,6 +1050,9 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
 
 // ─── HEALTH INTELLIGENCE ROUTES ──────────────────────────────────────────────
 
+// All /health routes require authentication
+app.use('/health', requireAuth);
+
 // Helper to get formatted current time in HH:MM format
 function getFormattedTime() {
   const now = new Date();
@@ -1008,7 +1061,7 @@ function getFormattedTime() {
 
 // Route: Get dashboard state
 app.get('/health/dashboard', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
   const scoreInfo = calculateHealthScore(db, targetDateStr);
   
@@ -1062,9 +1115,21 @@ app.get('/health/dashboard', async (req, res) => {
   // Filter timeline events for target date
   const filteredTimeline = (db.timeline || []).filter(e => e.date ? e.date === targetDateStr : targetDateStr === new Date().toISOString().split('T')[0]);
 
+  // Calculate dynamic scoreDiff vs 7 days ago
+  const lastWeekDate = new Date(targetDateStr);
+  lastWeekDate.setDate(lastWeekDate.getDate() - 7);
+  const lastWeekDateStr = lastWeekDate.toISOString().split('T')[0];
+  const lastWeekScore = calculateHealthScore(db, lastWeekDateStr).score;
+  const scoreDelta = scoreInfo.score - lastWeekScore;
+  const scoreDiffStr = scoreDelta > 0
+    ? `+${scoreDelta} vs last week`
+    : scoreDelta < 0
+      ? `${scoreDelta} vs last week`
+      : 'Same as last week';
+
   res.json({
     healthScore: scoreInfo.score,
-    scoreDiff: "+4 this week",
+    scoreDiff: scoreDiffStr,
     scoreRating: scoreInfo.score >= 80 ? 'Excellent' : scoreInfo.score >= 60 ? 'Good' : 'Needs Work',
     components: scoreInfo.components,
     dailySummary,
@@ -1077,7 +1142,7 @@ app.get('/health/dashboard', async (req, res) => {
 
 // Route: Get historical charts metrics
 app.get('/health/metrics', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   
   // Sort logs by date to ensure proper timeline chart ordering
   const sortedSteps = [...db.step_logs].sort((a,b) => a.date.localeCompare(b.date)).slice(-7);
@@ -1105,7 +1170,7 @@ app.get('/health/metrics', async (req, res) => {
 // Route: Connect Fit & Health Connect (Sync Simulation)
 app.post('/health/connect/:provider', async (req, res) => {
   const { provider } = req.params;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const todayStr = new Date().toISOString().split('T')[0];
 
   if (provider === 'google-fit') {
@@ -1171,305 +1236,213 @@ app.post('/health/connect/:provider', async (req, res) => {
     });
   }
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
   res.json({ status: 'success', profile: db.profile });
 });
 
 // Route: Real or Mock Health Data Sync
+// Route: Real Health Data Sync (Google Fit)
 app.post('/health/sync', async (req, res) => {
-  const { provider, type } = req.body;
-  const db = await readDb();
+  const { type } = req.body;
+  const db = await readDb(req.userId);
   const todayStr = new Date().toISOString().split('T')[0];
 
-  if (type === 'real') {
-    if (!calendarTokens) {
-      return res.status(401).json({
-        error: 'unlinked',
-        message: 'Google Account is not linked. Please click "Link Google Calendar" in the sidebar first to grant permissions.'
+  if (type !== 'real') {
+    return res.status(400).json({ error: 'invalid_type', message: 'Only real synchronization is supported.' });
+  }
+
+  const client = await getOAuth2ClientForUser(req.userId);
+  if (!client) {
+    return res.status(401).json({
+      error: 'unlinked',
+      message: 'Google Account is not linked. Please connect your Google Account first to grant permissions.'
+    });
+  }
+
+  try {
+    const fitness = google.fitness({ version: 'v1', auth: client });
+
+    const now = new Date();
+    const endTime = now.getTime();
+    const startTime = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+
+    // 1. Fetch steps from com.google.step_count.delta
+    console.log(`[Google Fit Sync] Fetching steps for user ${req.userId}...`);
+    const stepsResponse = await fitness.users.dataset.aggregate({
+      userId: 'me',
+      requestBody: {
+        aggregateBy: [{ dataTypeName: 'com.google.step_count.delta' }],
+        bucketByTime: { durationMillis: 86400000 },
+        startTimeMillis: startTime,
+        endTimeMillis: endTime
+      }
+    });
+
+    // 2. Fetch sleep sessions
+    console.log(`[Google Fit Sync] Fetching sleep sessions for user ${req.userId}...`);
+    const sleepResponse = await fitness.users.sessions.list({
+      userId: 'me',
+      activityType: 72, // Sleep
+      startTime: new Date(startTime).toISOString(),
+      endTime: new Date(endTime).toISOString()
+    });
+
+    // 3. Fetch heart rate
+    console.log(`[Google Fit Sync] Fetching heart rate for user ${req.userId}...`);
+    const hrResponse = await fitness.users.dataset.aggregate({
+      userId: 'me',
+      requestBody: {
+        aggregateBy: [{ dataTypeName: 'com.google.heart_rate.bpm' }],
+        bucketByTime: { durationMillis: 86400000 },
+        startTimeMillis: startTime,
+        endTimeMillis: endTime
+      }
+    });
+
+    // Map dates for the last 7 days
+    const dates = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dates.push(d.toISOString().split('T')[0]);
+    }
+
+    // Process Steps
+    const fitSteps = [];
+    if (stepsResponse?.data?.bucket) {
+      stepsResponse.data.bucket.forEach((bucket, idx) => {
+        const dateStr = dates[idx] || new Date(parseInt(bucket.startTimeMillis)).toISOString().split('T')[0];
+        let count = 0;
+        if (bucket.dataset?.[0]?.point) {
+          bucket.dataset[0].point.forEach(pt => {
+            if (pt.value?.[0]) {
+              count += pt.value[0].intVal || Math.round(pt.value[0].fpVal || 0);
+            }
+          });
+        }
+        fitSteps.push({
+          date: dateStr,
+          count: count,
+          distance: Math.round(count * 0.75),
+          calories: Math.round(count * 0.04) + 1800,
+          source: 'google-fit-real'
+        });
       });
     }
 
-    try {
-      oauth2Client.setCredentials(calendarTokens);
-      const fitness = google.fitness({ version: 'v1', auth: oauth2Client });
-
-      const now = new Date();
-      const endTime = now.getTime();
-      const startTime = now.getTime() - 7 * 24 * 60 * 60 * 1000;
-
-      // 1. Fetch steps from com.google.step_count.delta
-      console.log('Fetching steps from Google Fit API...');
-      const stepsResponse = await fitness.users.dataset.aggregate({
-        userId: 'me',
-        requestBody: {
-          aggregateBy: [{ dataTypeName: 'com.google.step_count.delta' }],
-          bucketByTime: { durationMillis: 86400000 },
-          startTimeMillis: startTime,
-          endTimeMillis: endTime
-        }
-      });
-
-      // 2. Fetch sleep sessions
-      console.log('Fetching sleep sessions from Google Fit API...');
-      const sleepResponse = await fitness.users.sessions.list({
-        userId: 'me',
-        activityType: 72, // Sleep
-        startTime: new Date(startTime).toISOString(),
-        endTime: new Date(endTime).toISOString()
-      });
-
-      // 3. Fetch heart rate
-      console.log('Fetching heart rate from Google Fit API...');
-      const hrResponse = await fitness.users.dataset.aggregate({
-        userId: 'me',
-        requestBody: {
-          aggregateBy: [{ dataTypeName: 'com.google.heart_rate.bpm' }],
-          bucketByTime: { durationMillis: 86400000 },
-          startTimeMillis: startTime,
-          endTimeMillis: endTime
-        }
-      });
-
-      // Map dates for the last 7 days
-      const dates = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().split('T')[0]);
-      }
-
-      // Process Steps
-      const fitSteps = [];
-      if (stepsResponse && stepsResponse.data && stepsResponse.data.bucket) {
-        stepsResponse.data.bucket.forEach((bucket, idx) => {
-          const dateStr = dates[idx] || new Date(parseInt(bucket.startTimeMillis)).toISOString().split('T')[0];
-          let count = 0;
-          if (bucket.dataset && bucket.dataset[0] && bucket.dataset[0].point) {
-            bucket.dataset[0].point.forEach(pt => {
-              if (pt.value && pt.value[0]) {
-                count += pt.value[0].intVal || Math.round(pt.value[0].fpVal || 0);
-              }
-            });
-          }
-          fitSteps.push({
-            date: dateStr,
-            count: count,
-            distance: Math.round(count * 0.75),
-            calories: Math.round(count * 0.04) + 1800,
-            source: 'google-fit-real'
-          });
-        });
-      }
-
-      // Process Heart Rate
-      const fitHR = [];
-      if (hrResponse && hrResponse.data && hrResponse.data.bucket) {
-        hrResponse.data.bucket.forEach((bucket, idx) => {
-          const dateStr = dates[idx] || new Date(parseInt(bucket.startTimeMillis)).toISOString().split('T')[0];
-          let bpmSum = 0;
-          let bpmCount = 0;
-          if (bucket.dataset && bucket.dataset[0] && bucket.dataset[0].point) {
-            bucket.dataset[0].point.forEach(pt => {
-              if (pt.value && pt.value[0]) {
-                bpmSum += pt.value[0].fpVal || pt.value[0].intVal || 0;
-                bpmCount++;
-              }
-            });
-          }
-          const bpm = bpmCount > 0 ? Math.round(bpmSum / bpmCount) : 70; // 70 bpm resting baseline
-          fitHR.push({
-            date: dateStr,
-            bpm,
-            source: 'google-fit-real'
-          });
-        });
-      }
-
-      // Process Sleep
-      const fitSleep = [];
-      const sleepSessions = sleepResponse?.data?.session || [];
-      dates.forEach(dateStr => {
-        const sess = sleepSessions.find(s => {
-          const sDate = new Date(parseInt(s.startTimeMillis)).toISOString().split('T')[0];
-          return sDate === dateStr;
-        });
-        if (sess) {
-          const duration = Math.round((parseInt(s.endTimeMillis) - parseInt(s.startTimeMillis)) / 60000);
-          fitSleep.push({
-            date: dateStr,
-            duration,
-            deep: Math.round(duration * 0.22),
-            rem: Math.round(duration * 0.20),
-            light: Math.round(duration * 0.58),
-            source: 'google-fit-real'
-          });
-        } else {
-          fitSleep.push({
-            date: dateStr,
-            duration: 0,
-            deep: 0,
-            rem: 0,
-            light: 0,
-            source: 'google-fit-real'
+    // Process Heart Rate
+    const fitHR = [];
+    if (hrResponse?.data?.bucket) {
+      hrResponse.data.bucket.forEach((bucket, idx) => {
+        const dateStr = dates[idx] || new Date(parseInt(bucket.startTimeMillis)).toISOString().split('T')[0];
+        let bpmSum = 0;
+        let bpmCount = 0;
+        if (bucket.dataset?.[0]?.point) {
+          bucket.dataset[0].point.forEach(pt => {
+            if (pt.value?.[0]) {
+              bpmSum += pt.value[0].fpVal || pt.value[0].intVal || 0;
+              bpmCount++;
+            }
           });
         }
-      });
-
-      // Save to database
-      if (fitSteps.length > 0) {
-        fitSteps.forEach(fs => {
-          const i = db.step_logs.findIndex(l => l.date === fs.date);
-          if (i !== -1) db.step_logs[i] = fs;
-          else db.step_logs.push(fs);
+        const bpm = bpmCount > 0 ? Math.round(bpmSum / bpmCount) : 0;
+        fitHR.push({
+          date: dateStr,
+          bpm,
+          source: 'google-fit-real'
         });
-      }
-      if (fitHR.length > 0) {
-        fitHR.forEach(fh => {
-          const i = db.heart_rate_logs.findIndex(l => l.date === fh.date);
-          if (i !== -1) db.heart_rate_logs[i] = fh;
-          else db.heart_rate_logs.push(fh);
-        });
-      }
-      if (fitSleep.length > 0) {
-        fitSleep.forEach(fsl => {
-          const i = db.sleep_logs.findIndex(l => l.date === fsl.date);
-          if (i !== -1) db.sleep_logs[i] = fsl;
-          else db.sleep_logs.push(fsl);
-        });
-      }
-
-      db.profile.connectedGoogleFit = true;
-      db.timeline.unshift({
-        time: getFormattedTime(),
-        text: 'Synced real health biometrics from Google Fit REST API.',
-        type: 'sync'
-      });
-
-      await writeDb(db);
-      res.json({ status: 'success', synced: true, source: 'real', profile: db.profile });
-
-    } catch (err) {
-      console.error('Google Fit real sync failed, falling back to mock data:', err);
-      let errMsg = err.message || '';
-      
-      if (err.code === 403 || errMsg.toLowerCase().includes('scope') || errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('auth') || errMsg.toLowerCase().includes('disabled') || errMsg.toLowerCase().includes('not been used')) {
-        errMsg = 'Fitness API has not been enabled or lacks permissions. Enable it by visiting https://console.developers.google.com/apis/api/fitness.googleapis.com/overview?project=1002916332511 then retry. Make sure you check all fitness checkboxes during Google authentication.';
-      }
-
-      // Generate mock fallback logs so the UI is populated
-      db.profile.connectedGoogleFit = true;
-      
-      const dates = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().split('T')[0]);
-      }
-      
-      dates.forEach(d => {
-        const stepIdx = db.step_logs.findIndex(l => l.date === d);
-        const mockSteps = {
-          date: d,
-          count: Math.floor(Math.random() * 4000) + 6000,
-          distance: 5000,
-          calories: 2100,
-          source: 'google-fit-mock'
-        };
-        if (stepIdx !== -1) db.step_logs[stepIdx] = mockSteps;
-        else db.step_logs.push(mockSteps);
-
-        const sleepIdx = db.sleep_logs.findIndex(l => l.date === d);
-        const mockSleep = {
-          date: d,
-          duration: 400 + Math.floor(Math.random() * 50),
-          deep: 80,
-          rem: 80,
-          light: 240,
-          source: 'google-fit-mock'
-        };
-        if (sleepIdx !== -1) db.sleep_logs[sleepIdx] = mockSleep;
-        else db.sleep_logs.push(mockSleep);
-
-        const hrIdx = db.heart_rate_logs.findIndex(l => l.date === d);
-        const mockHR = {
-          date: d,
-          bpm: 72,
-          source: 'google-fit-mock'
-        };
-        if (hrIdx !== -1) db.heart_rate_logs[hrIdx] = mockHR;
-        else db.heart_rate_logs.push(mockHR);
-      });
-
-      db.timeline.unshift({
-        time: getFormattedTime(),
-        text: `Real sync failed. Fell back to simulated mock data.`,
-        type: 'sync-error'
-      });
-
-      await writeDb(db);
-
-      res.json({
-        status: 'success',
-        synced: true,
-        source: 'mock_fallback',
-        warning: errMsg,
-        profile: db.profile
       });
     }
 
-  } else {
-    // MOCK SYNC
+    // Process Sleep
+    const fitSleep = [];
+    const sleepSessions = sleepResponse?.data?.session || [];
+    dates.forEach(dateStr => {
+      const sess = sleepSessions.find(s => {
+        const sDate = new Date(parseInt(s.startTimeMillis)).toISOString().split('T')[0];
+        return sDate === dateStr;
+      });
+      if (sess) {
+        const duration = Math.round((parseInt(sess.endTimeMillis) - parseInt(sess.startTimeMillis)) / 60000);
+        fitSleep.push({
+          date: dateStr,
+          duration,
+          deep: Math.round(duration * 0.22),
+          rem: Math.round(duration * 0.20),
+          light: Math.round(duration * 0.58),
+          source: 'google-fit-real'
+        });
+      } else {
+        fitSleep.push({
+          date: dateStr,
+          duration: 0,
+          deep: 0,
+          rem: 0,
+          light: 0,
+          source: 'google-fit-real'
+        });
+      }
+    });
+
+    // Save to database
+    if (fitSteps.length > 0) {
+      fitSteps.forEach(fs => {
+        const i = db.step_logs.findIndex(l => l.date === fs.date);
+        if (i !== -1) db.step_logs[i] = fs;
+        else db.step_logs.push(fs);
+      });
+    }
+    if (fitHR.length > 0) {
+      fitHR.forEach(fh => {
+        const i = db.heart_rate_logs.findIndex(l => l.date === fh.date);
+        if (i !== -1) db.heart_rate_logs[i] = fh;
+        else db.heart_rate_logs.push(fh);
+      });
+    }
+    if (fitSleep.length > 0) {
+      fitSleep.forEach(fsl => {
+        const i = db.sleep_logs.findIndex(l => l.date === fsl.date);
+        if (i !== -1) db.sleep_logs[i] = fsl;
+        else db.sleep_logs.push(fsl);
+      });
+    }
+
     db.profile.connectedGoogleFit = true;
-    db.profile.connectedHealthConnect = true;
+    db.timeline.unshift({
+      time: getFormattedTime(),
+      text: 'Synchronized steps, sleep, and heart rate telemetry from Google Fit.',
+      type: 'sync'
+    });
 
-    // Set today's mock entries
-    let stepsToday = db.step_logs.find(l => l.date === todayStr);
-    if (!stepsToday) {
-      stepsToday = { date: todayStr, count: 0, distance: 0, calories: 0, source: 'google-fit-mock' };
-      db.step_logs.push(stepsToday);
-    }
-    stepsToday.count = 9432;
-    stepsToday.distance = 7100;
-    stepsToday.calories = 2150;
+    await writeDb(req.userId, db);
+    res.json({ status: 'success', synced: true, source: 'real', profile: db.profile });
+
+  } catch (err) {
+    console.error('[Google Fit Sync Error]:', err);
+    let errMsg = err.message || '';
     
-    let sleepToday = db.sleep_logs.find(l => l.date === todayStr);
-    if (!sleepToday) {
-      sleepToday = { date: todayStr, duration: 0, deep: 0, rem: 0, light: 0, source: 'google-fit-mock' };
-      db.sleep_logs.push(sleepToday);
-    }
-    sleepToday.duration = 445; // 7.4 hours
-    sleepToday.deep = 95;
-    sleepToday.rem = 100;
-    sleepToday.light = 250;
-
-    let hrToday = db.heart_rate_logs.find(l => l.date === todayStr);
-    if (!hrToday) {
-      hrToday = { date: todayStr, bpm: 72, source: 'google-fit-mock' };
-      db.heart_rate_logs.push(hrToday);
-    }
-    hrToday.bpm = 69;
-
-    let workoutToday = db.workout_logs.find(l => l.date === todayStr);
-    if (!workoutToday) {
-      workoutToday = { date: todayStr, type: 'Cardio Gym', duration: 45, calories: 350, source: 'google-fit-mock' };
-      db.workout_logs.push(workoutToday);
+    if (err.code === 403 || errMsg.toLowerCase().includes('scope') || errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('auth') || errMsg.toLowerCase().includes('disabled') || errMsg.toLowerCase().includes('not been used')) {
+      errMsg = 'Fitness API has not been enabled or lacks permissions. Please visit https://console.developers.google.com/apis/api/fitness.googleapis.com/overview?project=1002916332511 to enable it in your Google Cloud Console, and ensure you check all checkboxes during authorization.';
     }
 
     db.timeline.unshift({
       time: getFormattedTime(),
-      text: 'Synced simulated health biometrics (Mock Sync).',
-      type: 'sync'
+      text: `Google Fit synchronization failed: ${errMsg}`,
+      type: 'sync-error'
     });
+    await writeDb(req.userId, db);
 
-    await writeDb(db);
-    res.json({ status: 'success', synced: true, source: 'mock', profile: db.profile });
+    res.status(500).json({
+      error: 'sync_failed',
+      message: errMsg
+    });
   }
 });
 
 // Route: Manual Data Entry
 app.post('/health/manual-entry', async (req, res) => {
   const { type, value, medicationId, date } = req.body;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const todayStr = date || new Date().toISOString().split('T')[0];
   const timeStr = getFormattedTime();
 
@@ -1539,23 +1512,23 @@ app.post('/health/manual-entry', async (req, res) => {
     }
   }
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
   res.json({ status: 'success', scoreInfo: calculateHealthScore(db, todayStr) });
 });
 
 // Route: Get goals list
 app.get('/health/goals', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   res.json(db.goals);
 });
 
 // Route: Create or update goal
 app.put('/health/goals', async (req, res) => {
   const { goals } = req.body;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   if (Array.isArray(goals)) {
     db.goals = goals;
-    await writeDb(db);
+    await writeDb(req.userId, db);
     return res.json({ status: 'success', goals: db.goals });
   }
   res.status(400).json({ error: 'Goals must be an array' });
@@ -1563,7 +1536,7 @@ app.put('/health/goals', async (req, res) => {
 
 // Route: Get timeline events
 app.get('/health/timeline', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
   const filteredTimeline = (db.timeline || []).filter(e => e.date ? e.date === targetDateStr : targetDateStr === new Date().toISOString().split('T')[0]);
   res.json(filteredTimeline);
@@ -1571,20 +1544,20 @@ app.get('/health/timeline', async (req, res) => {
 
 // Route: Get recommendations
 app.get('/health/recommendations', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   res.json(db.recommendations);
 });
 
 // Route: Get medications
 app.get('/health/medications', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   res.json(db.medications);
 });
 
 // Route: Add medication
 app.post('/health/medications', async (req, res) => {
   const { name, dosage, frequency, refillReminder, refillCount } = req.body;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   
   if (!name || !dosage) {
     return res.status(400).json({ error: 'Medication name and dosage are required' });
@@ -1610,7 +1583,7 @@ app.post('/health/medications', async (req, res) => {
     type: 'medication'
   });
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
   res.json({ status: 'success', medication: newMed });
 });
 
@@ -1618,7 +1591,7 @@ app.post('/health/medications', async (req, res) => {
 app.post('/health/medications/:id/refill', async (req, res) => {
   const { id } = req.params;
   const { count } = req.body;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const med = db.medications.find(m => m.id === id);
   if (med) {
     med.refillCount = (med.refillCount || 0) + parseInt(count || 30);
@@ -1627,7 +1600,7 @@ app.post('/health/medications/:id/refill', async (req, res) => {
       text: `Refilled medication supply: ${med.name} (+${count || 30} doses)`,
       type: 'medication'
     });
-    await writeDb(db);
+    await writeDb(req.userId, db);
     return res.json({ status: 'success', medication: med });
   }
   res.status(404).json({ error: 'Medication not found' });
@@ -1642,7 +1615,7 @@ app.post('/health/report/upload', async (req, res) => {
   }
 
   const promptText = `
-You are EVA's Medical intelligence engine. You will be provided with a medical report, blood test, prescription, or clinical lab result.
+You are Orbit's Medical intelligence engine. You will be provided with a medical report, blood test, prescription, or clinical lab result.
 Parse the document and extract key metrics.
 Return your response STRICTLY as a JSON object with the following fields (no markdown wrapper, no conversational text):
 {
@@ -1657,7 +1630,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
   // Fallback mode if no keys are configured
   if (!anthropic && !googleGenAI) {
     console.warn('WARNING: No AI API keys are configured. Returning demo mock response for medical report.');
-    const db = await readDb();
+    const db = await readDb(req.userId);
     const demoReport = {
       id: 'rep_' + Date.now(),
       fileName: fileName || 'Blood_Report.pdf',
@@ -1686,7 +1659,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
       text: `Uploaded and parsed medical report: ${fileName || 'Blood_Report.pdf'} (Demo Mode)`,
       type: 'medical'
     });
-    await writeDb(db);
+    await writeDb(req.userId, db);
 
     return res.json(demoReport);
   }
@@ -1699,7 +1672,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 1024,
         temperature: 0.1,
-        system: "You are EVA's medical analysis core. Return only a JSON object. No markdown.",
+        system: "You are Orbit's medical analysis core. Return only a JSON object. No markdown.",
         messages: [{ role: 'user', content: promptText }],
       });
       responseText = message.content[0].text;
@@ -1716,7 +1689,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
 
       const result = await model.generateContent({
         contents: [{ role: 'user', parts }],
-        systemInstruction: "You are the EVA medical analysis core. Return only a JSON object. No markdown, no backticks."
+        systemInstruction: "You are the Orbit medical analysis core. Return only a JSON object. No markdown, no backticks."
       });
       responseText = result.response.text();
     }
@@ -1726,7 +1699,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
     parsedJSON.fileName = fileName || 'Medical_Report.pdf';
     parsedJSON.uploadDate = new Date().toISOString().split('T')[0];
 
-    const db = await readDb();
+    const db = await readDb(req.userId);
     db.medical_reports.unshift(parsedJSON);
     
     db.timeline.unshift({
@@ -1734,7 +1707,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
       text: `Uploaded and parsed medical report: ${parsedJSON.fileName}`,
       type: 'medical'
     });
-    await writeDb(db);
+    await writeDb(req.userId, db);
 
     return res.json(parsedJSON);
 
@@ -1746,7 +1719,7 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
 
 // Route: Get AI coaching insights
 app.get('/health/insights', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   
   if (!anthropic && !googleGenAI) {
     return res.json(db.insights);
@@ -1777,7 +1750,7 @@ Return your response STRICTLY as a JSON array of objects (no markdown wrappers, 
       });
       const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: promptText }] }],
-        systemInstruction: "You are EVA's physiological coaching engine. Return only a JSON array. No markdown."
+        systemInstruction: "You are Orbit's physiological coaching engine. Return only a JSON array. No markdown."
       });
       responseText = result.response.text();
     } else if (anthropic) {
@@ -1785,7 +1758,7 @@ Return your response STRICTLY as a JSON array of objects (no markdown wrappers, 
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 512,
         temperature: 0.2,
-        system: "You are EVA's physiological coaching engine. Return only a JSON array.",
+        system: "You are Orbit's physiological coaching engine. Return only a JSON array.",
         messages: [{ role: 'user', content: promptText }],
       });
       responseText = message.content[0].text;
@@ -1793,7 +1766,7 @@ Return your response STRICTLY as a JSON array of objects (no markdown wrappers, 
 
     const parsed = JSON.parse(responseText.trim());
     db.insights = parsed;
-    await writeDb(db);
+    await writeDb(req.userId, db);
     res.json(parsed);
   } catch (error) {
     console.error('Failed to generate AI insights:', error);
@@ -1895,7 +1868,7 @@ async function writeDocs(docs) {
 }
 
 function generateDocId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return crypto.randomUUID();
 }
 
 // Determine category icon and colour hint from category string
@@ -2035,7 +2008,7 @@ app.post('/documents/upload', async (req, res) => {
     extracted = mockExtractDocument(fileName, mimeType);
   } else {
     const extractionPrompt = `
-You are EVA's Document Intelligence Core analyzing an uploaded file.
+You are Orbit's Document Intelligence Core analyzing an uploaded file.
 File name: ${fileName}
 MIME type: ${mimeType}
 
@@ -2273,29 +2246,115 @@ app.delete('/documents/:id', async (req, res) => {
 
 // ─── AI DECISION ENGINE ───────────────────────────────────────────────────────
 
-const DECISIONS_FILE = path.join(__dirname, 'data', 'decisions.json');
 const MAX_DECISION_HISTORY = 50;
 
-function readDecisions() {
+async function readDecisions() {
   try {
     const activeUserId = authStorage.getStore()?.userId;
-    const file = activeUserId ? path.join(__dirname, 'data', `decisions_${activeUserId}.json`) : DECISIONS_FILE;
-    if (!fs.existsSync(file)) {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, '[]');
-    }
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch { return []; }
+    const user = await getNeonUser(activeUserId);
+    if (!user) return [];
+    
+    const dbDecisions = await db.select().from(dbSchema.decisions)
+      .where(eq(dbSchema.decisions.userId, user.id))
+      .orderBy(desc(dbSchema.decisions.createdAt));
+      
+    return dbDecisions.map(d => {
+      let parsedOptions = {};
+      try {
+        parsedOptions = typeof d.options === 'string' ? JSON.parse(d.options) : (d.options || {});
+      } catch {
+        parsedOptions = d.options || {};
+      }
+      
+      let parsedReasoning = [];
+      try {
+        parsedReasoning = typeof d.reasoning === 'string' ? JSON.parse(d.reasoning) : (d.reasoning || []);
+      } catch {
+        parsedReasoning = d.reasoning ? [d.reasoning] : [];
+      }
+
+      return {
+        id: d.id,
+        question: d.question,
+        domain: parsedOptions.domain || 'general',
+        recommendation: d.recommendation,
+        confidence: parsedOptions.confidence || 80,
+        timestamp: d.createdAt ? d.createdAt.toISOString() : new Date().toISOString(),
+        outcome: parsedOptions.outcome || null,
+        feedback: parsedOptions.feedback || null,
+        reasoning: parsedReasoning,
+        scenarioA: parsedOptions.scenarioA || null,
+        scenarioB: parsedOptions.scenarioB || null,
+        nextActions: parsedOptions.nextActions || [],
+        dataUsed: parsedOptions.dataUsed || []
+      };
+    });
+  } catch (err) {
+    console.error('Error reading decisions from Neon:', err);
+    return [];
+  }
 }
 
-function writeDecisions(decisions) {
-  const activeUserId = authStorage.getStore()?.userId;
-  const file = activeUserId ? path.join(__dirname, 'data', `decisions_${activeUserId}.json`) : DECISIONS_FILE;
-  fs.writeFileSync(file, JSON.stringify(decisions, null, 2));
+async function writeDecisions(decisions) {
+  try {
+    const activeUserId = authStorage.getStore()?.userId;
+    const user = await getNeonUser(activeUserId);
+    if (!user) return;
+
+    for (let i = 0; i < decisions.length; i++) {
+      const d = decisions[i];
+      const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(d.id);
+      
+      const optionsVal = {
+        domain: d.domain,
+        confidence: d.confidence,
+        scenarioA: d.scenarioA,
+        scenarioB: d.scenarioB,
+        nextActions: d.nextActions,
+        dataUsed: d.dataUsed,
+        outcome: d.outcome || null,
+        feedback: d.feedback || null
+      };
+
+      const res = await db.insert(dbSchema.decisions).values({
+        id: isUuid ? d.id : undefined,
+        userId: user.id,
+        question: d.question,
+        recommendation: d.recommendation,
+        reasoning: Array.isArray(d.reasoning) ? JSON.stringify(d.reasoning) : (d.reasoning || null),
+        options: optionsVal,
+        createdAt: d.timestamp ? new Date(d.timestamp) : new Date()
+      }).onConflictDoUpdate({
+        target: dbSchema.decisions.id,
+        set: {
+          question: d.question,
+          recommendation: d.recommendation,
+          reasoning: Array.isArray(d.reasoning) ? JSON.stringify(d.reasoning) : (d.reasoning || null),
+          options: optionsVal
+        }
+      }).returning();
+
+      if (res && res[0]) {
+        decisions[i].id = res[0].id;
+      }
+    }
+
+    const currentIds = decisions.map(d => d.id).filter(id => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id));
+    if (currentIds.length > 0) {
+      await db.delete(dbSchema.decisions).where(
+        and(
+          eq(dbSchema.decisions.userId, user.id),
+          not(inArray(dbSchema.decisions.id, currentIds))
+        )
+      );
+    }
+  } catch (err) {
+    console.error('Error writing decisions to Neon:', err);
+  }
 }
 
 function generateDecisionId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  return crypto.randomUUID();
 }
 
 // Detect intent domain from question text
@@ -2545,11 +2604,11 @@ function buildMockDecision(question, intent, ctx) {
 
   // ── Generic fallback
   return {
-    recommendation: 'Based on your current EVA data, this requires a balanced approach weighing multiple factors.',
+    recommendation: 'Based on your current Orbit data, this requires a balanced approach weighing multiple factors.',
     confidence: 60,
     domain: intent,
     reasoning: [
-      'This decision spans multiple life domains — use EVA\'s structured data to guide your thinking.',
+      'This decision spans multiple life domains — use Orbit\'s structured data to guide your thinking.',
       `Current health: ${health.sleepLastNight || '6h 42m'} sleep, ${(health.stepsToday || 8432).toLocaleString()} steps today.`,
       `Current finances: ₹${(finance.remaining || 9700).toLocaleString('en-IN')} remaining this month.`,
       `Calendar load: ${ctx.calendar?.eventsToday || 0} events today.`,
@@ -2575,15 +2634,15 @@ app.post('/decision/analyze', async (req, res) => {
   const { question, additionalContext } = req.body;
   if (!question?.trim()) return res.status(400).json({ error: 'question is required.' });
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const intent = detectIntent(question);
 
   // Fetch calendar events (non-blocking)
   let calendarEvents = [];
-  if (oauth2Client && calendarTokens) {
+  const client = await getOAuth2ClientForUser(req.userId);
+  if (client) {
     try {
-      oauth2Client.setCredentials(calendarTokens);
-      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      const calendar = google.calendar({ version: 'v3', auth: client });
       const now = new Date();
       const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
       const calRes = await calendar.events.list({
@@ -2616,7 +2675,7 @@ app.post('/decision/analyze', async (req, res) => {
     console.warn('[Decision Engine] No AI keys. Using mock reasoning engine.');
     result = buildMockDecision(question, intent, ctx);
   } else {
-    const systemPrompt = `You are EVA's AI Decision Engine — a multi-domain personal advisor.
+    const systemPrompt = `You are Orbit's AI Decision Engine — a multi-domain personal advisor.
 The user asked: "${question}"
 ${additionalContext ? `Additional context from user: "${additionalContext}"` : ''}
 
@@ -2796,7 +2855,7 @@ function computeFinanceScore(finance) {
 
 // GET /finance/dashboard
 app.get('/finance/dashboard', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const finance = db.finance || {};
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
   const [selYear, selMonth] = targetDateStr.split('-').map(Number);
@@ -2859,7 +2918,7 @@ app.post('/finance/transactions', async (req, res) => {
     return res.status(400).json({ error: 'Valid transaction amount is required.' });
   }
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   if (!db.finance) db.finance = {};
   if (!db.finance.transactions) db.finance.transactions = [];
 
@@ -2888,7 +2947,7 @@ app.post('/finance/transactions', async (req, res) => {
   db.finance.remaining = (db.finance.monthlyBudget || 40000) - monthSpent;
   db.finance.saved = (db.finance.income || 50000) - monthSpent;
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
   res.json({ success: true, transaction: newTx });
 });
 
@@ -2976,7 +3035,7 @@ app.post('/finance/expense/parse', async (req, res) => {
   }
 
   // AI Parser
-  const prompt = `You are EVA's Smart Finance Parser.
+  const prompt = `You are Orbit's Smart Finance Parser.
 Extract transaction details from this text: "${text}"
 
 Rules:
@@ -3026,7 +3085,7 @@ Return ONLY a JSON object with this exact structure:
 
 // GET /finance/insights
 app.get('/finance/insights', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const finance = db.finance || {};
   const transactions = finance.transactions || [];
   const budgets = finance.budgets || {};
@@ -3113,7 +3172,7 @@ app.get('/finance/insights', async (req, res) => {
     
     story = `This month, you have saved ₹${savingVal.toLocaleString('en-IN')}, representing a saving rate of ${Math.round((savingVal / finance.income) * 100)}%. However, ${overBudgetString} If current patterns continue, you will close the month with a surplus, but optimization is possible. We recommend evaluating your subscriptions, specifically ${unusedGym ? 'the unused Gym Membership' : 'recurring plans'} to boost savings.`;
   } else {
-    const prompt = `You are EVA's AI Financial Storyteller.
+    const prompt = `You are Orbit's AI Financial Storyteller.
 Here is the user's finance profile:
 - Monthly Income: ₹${finance.income}
 - Monthly Budget limit: ₹${finance.monthlyBudget}
@@ -3358,7 +3417,7 @@ function buildMockScamAnalysis(text, type, db) {
 // POST /scam/analyze
 app.post('/scam/analyze', async (req, res) => {
   const { type, text, base64, mimeType } = req.body;
-  const db = await readDb();
+  const db = await readDb(req.userId);
 
   let scanText = text || '';
 
@@ -3407,7 +3466,7 @@ app.post('/scam/analyze', async (req, res) => {
     result = buildMockScamAnalysis(scanText, type, db);
   } else {
     // Generate AI safety analysis
-    const systemPrompt = `You are EVA's AI Scam Shield.
+    const systemPrompt = `You are Orbit's AI Scam Shield.
 Analyze this suspect text for scams, phishing, delivery fraud, KYC blocks, and social engineering.
  suspect text: "${scanText}"
 Input type: ${type || 'text'}
@@ -3505,7 +3564,7 @@ Return ONLY a JSON object with this exact structure:
   const highRiskCount = db.security.scamLog.filter(s => s.risk_level === 'HIGH RISK').length;
   db.security.overallScore = Math.max(30, 98 - (highRiskCount * 8));
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({
     ...result,
@@ -3516,7 +3575,7 @@ Return ONLY a JSON object with this exact structure:
 
 // GET /scam/history
 app.get('/scam/history', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   res.json({
     scams: (db.security?.scamLog || []).slice(0, 15),
     overallScore: db.security?.overallScore || 98
@@ -3671,7 +3730,7 @@ function parseGoalFromText(text) {
 
 // GET /goals — List all goals with milestones, habits, insights
 app.get('/goals', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { goals: [], milestones: [], habits: [], habitLogs: [], goalInsights: [] };
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
 
@@ -3710,7 +3769,7 @@ app.post('/goals', async (req, res) => {
     return res.status(400).json({ error: 'Provide userText or title to create a goal.' });
   }
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   if (!db.goalEngine) db.goalEngine = { goals: [], milestones: [], habits: [], habitLogs: [], goalInsights: [] };
 
   const today = new Date().toISOString().split('T')[0];
@@ -3732,7 +3791,7 @@ app.post('/goals', async (req, res) => {
 
   if ((anthropic || googleGenAI) && userText) {
     try {
-      const prompt = `You are EVA's Goal Engine. The user wants to create a goal.
+      const prompt = `You are Orbit's Goal Engine. The user wants to create a goal.
 
 User text: "${userText}"
 
@@ -3864,7 +3923,7 @@ Generate 3-6 milestones and 2-4 habits appropriate for the goal type. Keep miles
     });
   });
 
-  await writeDb(db);
+  await writeDb(req.userId, db);
   res.json({
     goal: computeGoalHealth(newGoal),
     milestones: db.goalEngine.milestones.filter(m => m.goalId === goalId),
@@ -3877,7 +3936,7 @@ app.put('/goals/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { goals: [], milestones: [], habits: [], habitLogs: [], goalInsights: [] };
   const goalIdx = ge.goals.findIndex(g => g.id === id);
 
@@ -3910,7 +3969,7 @@ app.put('/goals/:id', async (req, res) => {
 
   ge.goals[goalIdx] = { ...ge.goals[goalIdx], ...updates };
   db.goalEngine = ge;
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({ goal: computeGoalHealth(ge.goals[goalIdx]) });
 });
@@ -3918,7 +3977,7 @@ app.put('/goals/:id', async (req, res) => {
 // DELETE /goals/:id — Archive a goal
 app.delete('/goals/:id', async (req, res) => {
   const { id } = req.params;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || {};
   if (!ge.goals) return res.status(404).json({ error: 'Goal not found.' });
 
@@ -3927,7 +3986,7 @@ app.delete('/goals/:id', async (req, res) => {
 
   ge.goals[goalIdx].status = 'archived';
   db.goalEngine = ge;
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({ success: true });
 });
@@ -3939,7 +3998,7 @@ app.post('/goals/:id/milestones', async (req, res) => {
 
   if (!title) return res.status(400).json({ error: 'Milestone title is required.' });
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   if (!db.goalEngine) return res.status(404).json({ error: 'Goal engine not initialized.' });
 
   const goal = db.goalEngine.goals.find(g => g.id === id);
@@ -3958,7 +4017,7 @@ app.post('/goals/:id/milestones', async (req, res) => {
   };
 
   db.goalEngine.milestones.push(milestone);
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({ milestone });
 });
@@ -3968,7 +4027,7 @@ app.put('/milestones/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || {};
   if (!ge.milestones) return res.status(404).json({ error: 'Milestone not found.' });
 
@@ -4003,14 +4062,14 @@ app.put('/milestones/:id', async (req, res) => {
 
   ge.milestones[msIdx] = { ...ge.milestones[msIdx], ...updates };
   db.goalEngine = ge;
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({ milestone: ge.milestones[msIdx] });
 });
 
 // GET /habits/today — All habits due today with completion status
 app.get('/habits/today', async (req, res) => {
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { habits: [], habitLogs: [], goals: [] };
   const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
   const dayOfWeek = new Date(targetDateStr).getDay(); // 0=Sun,6=Sat
@@ -4050,7 +4109,7 @@ app.post('/habits/:id/log', async (req, res) => {
   const { id } = req.params;
   const { value, completed, date } = req.body;
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { habits: [], habitLogs: [] };
   const targetDateStr = date || new Date().toISOString().split('T')[0];
 
@@ -4094,7 +4153,7 @@ app.post('/habits/:id/log', async (req, res) => {
   }
 
   db.goalEngine = ge;
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({ log: logEntry, habit: ge.habits[habitIdx] });
 });
@@ -4102,7 +4161,7 @@ app.post('/habits/:id/log', async (req, res) => {
 // GET /goals/:id/insights — Drift detection + cross-domain AI insights
 app.get('/goals/:id/insights', async (req, res) => {
   const { id } = req.params;
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { goals: [], milestones: [], habits: [], habitLogs: [], goalInsights: [] };
 
   const goal = ge.goals.find(g => g.id === id);
@@ -4131,7 +4190,7 @@ app.get('/goals/:id/insights', async (req, res) => {
 
   if (anthropic || googleGenAI) {
     try {
-      const prompt = `You are EVA's Goal Intelligence Engine. Analyze this goal and generate smart insights.
+      const prompt = `You are Orbit's Goal Intelligence Engine. Analyze this goal and generate smart insights.
 
 Goal Data:
 ${JSON.stringify(contextSummary, null, 2)}
@@ -4186,7 +4245,7 @@ Rules:
       // Persist updated insights
       const otherInsights = ge.goalInsights.filter(i => i.goalId !== id);
       db.goalEngine.goalInsights = [...otherInsights, ...freshInsights];
-      await writeDb(db);
+      await writeDb(req.userId, db);
 
     } catch (aiErr) {
       console.warn('[Goal Engine] AI insights failed:', aiErr.message);
@@ -4219,7 +4278,7 @@ app.post('/goals/:id/replan', async (req, res) => {
   const { id } = req.params;
   const { strategy } = req.body; // 'compress' | 'extend' | 'redistribute'
 
-  const db = await readDb();
+  const db = await readDb(req.userId);
   const ge = db.goalEngine || { goals: [], milestones: [], habits: [], habitLogs: [], goalInsights: [] };
 
   const goalIdx = ge.goals.findIndex(g => g.id === id);
@@ -4278,14 +4337,14 @@ app.post('/goals/:id/replan', async (req, res) => {
   ge.goalInsights.push({
     id: 'gi_replan_' + Date.now().toString(36),
     goalId: id,
-    message: `EVA replanned your goal using the "${strategy}" strategy. ${replanNote}`,
+    message: `Orbit replanned your goal using the "${strategy}" strategy. ${replanNote}`,
     severity: 'info',
     type: 'recommendation',
     createdAt: today
   });
 
   db.goalEngine = ge;
-  await writeDb(db);
+  await writeDb(req.userId, db);
 
   res.json({
     goal: computeGoalHealth(ge.goals[goalIdx]),
@@ -4330,3 +4389,4 @@ app.listen(PORT, () => {
   console.log(`  /goals/:id/replan    — Goal Engine: adaptive replanning\n`);
 });
 
+// Reload watch re-trigger comment

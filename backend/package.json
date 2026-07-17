@@ -1,7 +1,7 @@
 {
-  "name": "eva-backend",
+  "name": "orbit-backend",
   "version": "1.0.0",
-  "description": "Backend engine for EVA - Everyday Virtual Assistant",
+  "description": "Backend engine for Orbit - Orbit",
   "main": "server.js",
   "type": "module",
   "scripts": {

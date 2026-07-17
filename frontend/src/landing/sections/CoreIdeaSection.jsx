@@ -22,17 +22,17 @@ export default function CoreIdeaSection() {
               A layer above your life.
             </h2>
             <p className="mt-6 text-charcoal/70 font-sans leading-relaxed max-w-md">
-              EVA does not merely store data. EVA connects context — understanding
+              Orbit does not merely store data. Orbit connects context — understanding
               relationships between the different areas of your life.
             </p>
           </ScrollReveal>
 
           <div className="space-y-6">
-            {/* EVA layer */}
+            {/* Orbit layer */}
             <ScrollReveal direction="down" delay={100}>
               <div className="border-2 border-forest bg-forest/5 p-6 md:p-8 relative">
                 <span className="text-xs uppercase font-bold tracking-widest text-forest">
-                  EVA — Intelligence Layer
+                  Orbit — Intelligence Layer
                 </span>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {RELATIONSHIPS.map((r) => (
@@ -81,7 +81,7 @@ export default function CoreIdeaSection() {
             <ScrollReveal direction="up" delay={600}>
               <div className="border border-charcoal bg-charcoal text-alabaster p-6 md:p-8">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-sage">
-                  ↓ EVA understands the situation
+                  ↓ Orbit understands the situation
                 </span>
                 <p className="mt-3 font-serif text-lg md:text-xl leading-relaxed">
                   Your sleep deficit may affect interview performance. Consider

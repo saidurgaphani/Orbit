@@ -91,7 +91,7 @@ function EmptyVault({ onUpload }) {
       <FolderOpen className="w-16 h-16 text-charcoal/30 mb-6 select-none" />
       <h3 className="font-serif text-2xl font-bold mb-2">Your vault is empty</h3>
       <p className="text-sm font-sans text-charcoal/60 max-w-sm mb-8 leading-relaxed">
-        Upload any document — passport, salary slip, medical report, rental agreement — and EVA will read, understand, and organize it automatically.
+        Upload any document — passport, salary slip, medical report, rental agreement — and Orbit will read, understand, and organize it automatically.
       </p>
       <button
         onClick={onUpload}
@@ -258,7 +258,7 @@ function UploadPanel({ onSuccess, onCancel }) {
         <div>
           <span className="text-xs uppercase font-semibold tracking-wider text-forest block mb-1">[ VAULT INTAKE ]</span>
           <h3 className="text-2xl font-serif font-bold">Upload Document</h3>
-          <p className="text-sm text-charcoal/60 mt-1">EVA will read, understand, and categorize your document automatically.</p>
+          <p className="text-sm text-charcoal/60 mt-1">Orbit will read, understand, and categorize your document automatically.</p>
         </div>
         <button onClick={onCancel} className="text-xs uppercase tracking-wider font-bold text-charcoal/40 hover:text-charcoal transition-colors flex items-center gap-1.5 hover:-translate-y-0.5 transition-transform">
           <ArrowLeft className="w-3.5 h-3.5" />
@@ -503,13 +503,13 @@ function DocDetailPanel({ doc, onBack, onDelete }) {
                       ? 'bg-charcoal text-alabaster ml-8'
                       : 'bg-sage/20 border border-charcoal/20 text-charcoal'
                   }`}>
-                    {msg.role === 'ai' && <span className="text-[10px] font-bold uppercase tracking-wider text-forest block mb-1">EVA</span>}
+                    {msg.role === 'ai' && <span className="text-[10px] font-bold uppercase tracking-wider text-forest block mb-1">Orbit</span>}
                     {msg.text}
                   </div>
                 ))}
                 {chatLoading && (
                   <div className="bg-sage/20 border border-charcoal/20 text-charcoal text-sm font-sans px-3 py-2 animate-pulse">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-forest block mb-1">EVA</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-forest block mb-1">Orbit</span>
                     Thinking...
                   </div>
                 )}
@@ -540,7 +540,7 @@ function DocDetailPanel({ doc, onBack, onDelete }) {
         <div className="md:col-span-2 p-5">
           <span className="text-xs uppercase font-bold tracking-wider text-charcoal/50 block mb-3">[ INTELLIGENCE GRAPH ]</span>
           <p className="text-[10px] text-charcoal/40 font-sans mb-4 leading-relaxed">
-            EVA has detected these document types related to <span className="font-bold text-charcoal">{doc.fileName}</span>. Upload them to create live connections.
+            Orbit has detected these document types related to <span className="font-bold text-charcoal">{doc.fileName}</span>. Upload them to create live connections.
           </p>
           <div className="space-y-2">
             <div className="flex items-center gap-2 border border-charcoal/20 p-2 bg-alabaster">
