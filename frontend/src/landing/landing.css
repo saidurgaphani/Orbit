@@ -1,0 +1,143 @@
+/* ─── Scroll Reveal Animations ─────────────────────────────────────────── */
+
+.reveal {
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reveal-up {
+  opacity: 0;
+  transform: translateY(32px);
+}
+.reveal-down {
+  opacity: 0;
+  transform: translateY(-32px);
+}
+.reveal-left {
+  opacity: 0;
+  transform: translateX(-32px);
+}
+.reveal-right {
+  opacity: 0;
+  transform: translateX(32px);
+}
+.reveal-fade {
+  opacity: 0;
+}
+.reveal-scale {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+.revealed.reveal-up,
+.revealed.reveal-down,
+.revealed.reveal-left,
+.revealed.reveal-right,
+.revealed.reveal-fade,
+.revealed.reveal-scale {
+  opacity: 1;
+  transform: none;
+}
+
+/* ─── Life Map Animations ──────────────────────────────────────────────── */
+
+@keyframes lifeMapOrbit {
+  from { transform: rotate(0deg); transform-origin: 50px 50px; }
+  to { transform: rotate(360deg); transform-origin: 50px 50px; }
+}
+
+@keyframes lifeMapOrbitReverse {
+  from { transform: rotate(360deg); transform-origin: 50px 50px; }
+  to { transform: rotate(0deg); transform-origin: 50px 50px; }
+}
+
+@keyframes lifeMapPulse {
+  0%, 100% { opacity: 0.15; r: 0.3; }
+  50% { opacity: 0.45; r: 0.5; }
+}
+
+@keyframes lifeMapFlow {
+  0% { stroke-dashoffset: 100; opacity: 0.05; }
+  50% { opacity: 0.15; }
+  100% { stroke-dashoffset: 0; opacity: 0.05; }
+}
+
+@keyframes lifeMapLineDraw {
+  0% { stroke-dashoffset: 40; opacity: 0; }
+  100% { stroke-dashoffset: 0; opacity: 0.25; }
+}
+
+.life-map-orbit {
+  animation: lifeMapOrbit 120s linear infinite;
+}
+
+.life-map-orbit-reverse {
+  animation: lifeMapOrbitReverse 90s linear infinite;
+}
+
+.life-map-pulse {
+  animation: lifeMapPulse 4s ease-in-out infinite;
+}
+
+.life-map-flow {
+  stroke-dasharray: 100;
+  animation: lifeMapFlow 12s ease-in-out infinite;
+}
+
+.life-map-line {
+  stroke-dasharray: 40;
+  animation: lifeMapLineDraw 3s ease-out forwards;
+}
+
+.life-map-container svg circle.life-map-pulse {
+  animation: lifeMapPulse 4s ease-in-out infinite;
+}
+
+/* ─── Scroll Indicator ─────────────────────────────────────────────────── */
+
+@keyframes scrollLine {
+  0% { transform: translateY(-100%); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translateY(200%); opacity: 0; }
+}
+
+.animate-scroll-line {
+  animation: scrollLine 2s ease-in-out infinite;
+}
+
+/* ─── Reduced Motion ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal-up,
+  .reveal-down,
+  .reveal-left,
+  .reveal-right,
+  .reveal-fade,
+  .reveal-scale {
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .life-map-orbit,
+  .life-map-orbit-reverse,
+  .life-map-pulse,
+  .life-map-flow,
+  .life-map-line,
+  .animate-scroll-line {
+    animation: none !important;
+  }
+}
+
+/* ─── Landing Page Smooth Scroll ───────────────────────────────────────── */
+
+.landing-page {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-page {
+    scroll-behavior: auto;
+  }
+}

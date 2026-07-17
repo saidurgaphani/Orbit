@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Environment files — contains secrets, never commit
+.env
+backend/.env
+
+# Google Calendar OAuth token — contains user auth token, never commit
+backend/.calendar_token.json
+
+# Build output
+dist/
+build/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Local databases & caches
+backend/data/
+.cache/
+__pycache__/
+
+# Developer Documentation & Templates
+@docs/
+context/
+prompts/
+docs/
+*.docx
+*.pdf
