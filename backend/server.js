@@ -33,16 +33,18 @@ const app = express();
 const PORT = process.env.PORT || 5001;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',
-  'http://localhost:3000',
-  // Production Vercel frontend
-  'https://orbit-6echd05ja-phanis-projects-1fd2babd.vercel.app',
-  // Support any additional origins via env variable (comma-separated)
-  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : []),
-];
+// Extra origins allowed via env variable (comma-separated)
+const extraOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
+  : [];
+
+function isOriginAllowed(origin) {
+  if (!origin) return true; // allow server-to-server / curl
+  if (origin.startsWith('http://localhost:')) return true;
+  if (origin.endsWith('.vercel.app')) return true; // all Vercel preview & prod URLs
+  if (extraOrigins.includes(origin)) return true;
+  return false;
+}
 
 // Build a Set-Cookie string that works cross-origin in production
 function buildCookie(name, value, maxAge) {
@@ -55,9 +57,10 @@ function buildCookie(name, value, maxAge) {
 }
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
+      console.warn(`CORS blocked: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
