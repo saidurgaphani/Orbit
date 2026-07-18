@@ -23,7 +23,8 @@ import {
   ArrowRight,
   Clock,
   History,
-  AlertCircle
+  AlertCircle,
+  Search
 } from 'lucide-react';
 
 
@@ -429,43 +430,95 @@ function DecisionHistory({ onClose }) {
   const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(null);
+  const [search, setSearch] = useState('');
+
+  const fetchHistory = async (query = '') => {
+    setLoading(true);
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const headers = idToken ? { 'Authorization': `Bearer ${idToken}` } : {};
+      const url = `${BACKEND}/decision/history${query ? `?search=${encodeURIComponent(query)}` : ''}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setDecisions(data.decisions || []);
+    } catch (err) {
+      console.error('Failed to fetch decision history:', err);
+      setDecisions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchHistory = async () => {
-      try {
-        const idToken = await auth.currentUser?.getIdToken();
-        const headers = idToken ? { 'Authorization': `Bearer ${idToken}` } : {};
-        const res = await fetch(`${BACKEND}/decision/history`, { headers });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        setDecisions(data.decisions || []);
-      } catch (err) {
-        console.error('Failed to fetch decision history:', err);
-        setDecisions([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchHistory();
-  }, []);
+    const timer = setTimeout(() => {
+      fetchHistory(search);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
+  const handleFeedback = async (id, outcome) => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${BACKEND}/decision/feedback`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ decisionId: id, outcome })
+      });
+      if (res.ok) {
+        setDecisions(prev => prev.map(d => d.id === id ? { ...d, outcome } : d));
+      }
+    } catch (err) {
+      console.error('Failed to submit feedback:', err);
+    }
+  };
 
   return (
-    <div>
+    <div className="animate-fadeIn">
+      {/* HEADER */}
       <div className="border-b border-charcoal pb-4 mb-6 flex justify-between items-center">
         <div>
           <span className="text-xs uppercase font-semibold tracking-wider text-forest block mb-1">[ DECISION LOG ]</span>
           <h3 className="text-2xl font-serif font-bold">Past Decisions</h3>
+          <p className="text-xs text-charcoal/50 font-sans mt-1">
+            Browse and search your decision engine history, recommendations, and outcomes.
+          </p>
         </div>
         <button
           onClick={onClose}
-          className="text-xs font-bold uppercase tracking-wider text-charcoal/50 hover:text-charcoal transition-colors flex items-center gap-1.5"
+          className="text-xs font-bold uppercase tracking-wider text-charcoal/50 hover:text-charcoal transition-colors flex items-center gap-1.5 border border-charcoal/20 px-3 py-1.5 hover:border-charcoal"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
           <span>Back</span>
         </button>
       </div>
 
+      {/* SEARCH BAR */}
+      <div className="mb-6">
+        <div className="relative">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by question, category, or recommendation..."
+            className="w-full bg-alabaster border border-charcoal/40 pl-10 pr-4 py-2.5 font-sans text-sm text-charcoal placeholder-charcoal/40 focus:outline-none focus:border-charcoal shadow-[2px_2px_0px_0px_rgba(30,32,30,0.05)]"
+          />
+          <Search className="absolute left-3.5 top-3 w-4 h-4 text-charcoal/40" />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-3.5 top-3 text-xs font-bold text-charcoal/40 hover:text-charcoal"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* LOADING STATE */}
       {loading && (
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -477,50 +530,185 @@ function DecisionHistory({ onClose }) {
         </div>
       )}
 
+      {/* EMPTY STATE */}
       {!loading && decisions.length === 0 && (
-        <div className="border border-dashed border-charcoal/30 p-12 text-center flex flex-col items-center justify-center">
+        <div className="border border-dashed border-charcoal/30 p-12 text-center flex flex-col items-center justify-center bg-alabaster">
           <History className="w-8 h-8 text-charcoal/30 mb-3" />
-          <p className="font-serif italic text-charcoal/60">No decisions made yet.</p>
-          <p className="text-xs text-charcoal/40 mt-2">Your analyzed decisions will appear here.</p>
+          <p className="font-serif italic text-charcoal/60">
+            {search ? 'No matching decisions found.' : 'No decisions made yet.'}
+          </p>
+          <p className="text-xs text-charcoal/40 mt-2">
+            {search ? 'Try clearing or changing your search terms.' : 'Your analyzed decisions will appear here.'}
+          </p>
         </div>
       )}
 
+      {/* DECISION LOG LIST */}
       {!loading && decisions.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {decisions.map(d => {
             const domain = DOMAIN_META[d.domain] || DOMAIN_META.general;
             const conf = confidenceColor(d.confidence || 0);
             const isExpanded = expanded === d.id;
+            
+            // Format full date
+            const dateObj = new Date(d.timestamp);
+            const fullDateString = dateObj.toLocaleDateString(undefined, { 
+              weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+              hour: '2-digit', minute: '2-digit'
+            });
+
             return (
-              <div key={d.id} className="border border-charcoal/20 bg-alabaster hover:border-charcoal transition-colors hover:bg-charcoal/[0.01]">
+              <div key={d.id} className="border border-charcoal/20 bg-alabaster hover:border-charcoal transition-all shadow-[2px_2px_0px_0px_rgba(30,32,30,0.03)]">
+                {/* Header Toggle Row */}
                 <button
                   onClick={() => setExpanded(isExpanded ? null : d.id)}
-                  className="w-full flex items-start gap-3 p-4 text-left"
+                  className="w-full flex items-start gap-4 p-4 text-left hover:bg-charcoal/[0.01] transition-colors"
                 >
-                  {React.createElement(domain.icon, { className: "w-4.5 h-4.5 text-charcoal/60 shrink-0 mt-0.5" })}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-serif font-semibold text-charcoal truncate">{d.question}</div>
-                    <div className="text-xs text-charcoal/50 mt-0.5 font-sans">{formatRelativeTime(d.timestamp)}</div>
+                  <div className="mt-0.5 shrink-0">
+                    {React.createElement(domain.icon, { className: "w-5 h-5 text-charcoal/70" })}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 border ${conf.text} ${conf.border}`}>
-                      {d.confidence}%
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-serif font-bold text-charcoal leading-snug">{d.question}</div>
+                    <div className="text-[10px] uppercase font-bold text-charcoal/40 font-mono mt-1 tracking-wider">
+                      {fullDateString}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0 self-center">
+                    <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 border ${conf.text} ${conf.border}`}>
+                      {d.confidence}% Conf
                     </span>
                     {d.outcome && (
                       <span className={`text-[10px] ${d.outcome === 'positive' ? 'text-forest' : 'text-terracotta'}`}>
-                        {d.outcome === 'positive' ? <ThumbsUp className="w-3.5 h-3.5 inline" /> : <ThumbsDown className="w-3.5 h-3.5 inline" />}
+                        {d.outcome === 'positive' ? <ThumbsUp className="w-3.5 h-3.5 fill-forest/10" /> : <ThumbsDown className="w-3.5 h-3.5 fill-terracotta/10" />}
                       </span>
                     )}
-                    <span className="text-charcoal/30 text-sm">
+                    <span className="text-charcoal/30">
                       {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                     </span>
                   </div>
                 </button>
+
+                {/* Expanded Detail Panel */}
                 {isExpanded && (
-                  <div className="px-4 pb-4 border-t border-charcoal/10 pt-3">
-                    <p className="font-serif italic text-sm text-charcoal/80 leading-relaxed">
-                      "{d.recommendation}"
-                    </p>
+                  <div className="px-5 pb-5 border-t border-charcoal/10 pt-4 bg-alabaster/50 animate-fadeIn space-y-4 font-sans text-xs text-charcoal">
+                    {/* Recommendation Segment */}
+                    <div>
+                      <span className="text-[9px] uppercase font-black tracking-widest text-forest block mb-1">
+                        [ RECOMMENDATION ]
+                      </span>
+                      <p className="font-serif italic text-sm text-charcoal font-semibold leading-relaxed">
+                        "{d.recommendation}"
+                      </p>
+                    </div>
+
+                    {/* Reasoning Steps */}
+                    {d.reasoning && d.reasoning.length > 0 && (
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-widest text-charcoal/50 block mb-2">
+                          [ REASONING PATH ]
+                        </span>
+                        <ul className="space-y-1.5 pl-4 list-decimal font-sans text-charcoal/80 leading-relaxed">
+                          {d.reasoning.map((step, idx) => (
+                            <li key={idx}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Side-by-side Trade-offs & Risks */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Trade-offs */}
+                      {d.tradeoffs && d.tradeoffs.length > 0 && (
+                        <div className="border border-charcoal/10 p-3 bg-alabaster">
+                          <span className="text-[9px] uppercase font-black tracking-widest text-forest block mb-2">
+                            ✓ Trade-offs
+                          </span>
+                          <ul className="space-y-1 pl-3.5 list-disc text-charcoal/70 leading-relaxed">
+                            {d.tradeoffs.map((item, idx) => (
+                              <li key={idx}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Risks */}
+                      {d.risks && d.risks.length > 0 && (
+                        <div className="border border-charcoal/10 p-3 bg-alabaster">
+                          <span className="text-[9px] uppercase font-black tracking-widest text-terracotta block mb-2">
+                            ⚠ Risks
+                          </span>
+                          <ul className="space-y-1 pl-3.5 list-disc text-charcoal/70 leading-relaxed">
+                            {d.risks.map((item, idx) => (
+                              <li key={idx}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Missing Info & Next Action */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Missing Information */}
+                      {d.missing_information && d.missing_information.length > 0 && (
+                        <div>
+                          <span className="text-[9px] uppercase font-black tracking-widest text-charcoal/50 block mb-1.5">
+                            [ MISSING DETAILS ]
+                          </span>
+                          <ul className="space-y-1 pl-3.5 list-disc text-charcoal/70 leading-relaxed">
+                            {d.missing_information.map((item, idx) => (
+                              <li key={idx}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Next Steps */}
+                      {d.next_step && (
+                        <div>
+                          <span className="text-[9px] uppercase font-black tracking-widest text-charcoal/50 block mb-1">
+                            [ SUGGESTED ACTION ]
+                          </span>
+                          <p className="text-charcoal/80 leading-relaxed italic">
+                            {d.next_step}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Feedback outcome section */}
+                    <div className="border-t border-charcoal/10 pt-4 mt-2 flex justify-between items-center">
+                      <span className="text-[9px] uppercase font-bold text-charcoal/40 font-mono">
+                        Category: {domain.label}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] uppercase font-bold text-charcoal/50 font-sans mr-1">
+                          Was this advice useful?
+                        </span>
+                        <button
+                          onClick={() => handleFeedback(d.id, 'positive')}
+                          className={`text-[9px] uppercase font-bold tracking-wider px-2 py-1 border transition-all flex items-center gap-1 ${
+                            d.outcome === 'positive'
+                              ? 'bg-forest text-alabaster border-forest'
+                              : 'text-charcoal/50 border-charcoal/20 hover:border-forest hover:text-forest'
+                          }`}
+                        >
+                          <ThumbsUp className="w-3 h-3" />
+                          <span>Yes</span>
+                        </button>
+                        <button
+                          onClick={() => handleFeedback(d.id, 'negative')}
+                          className={`text-[9px] uppercase font-bold tracking-wider px-2 py-1 border transition-all flex items-center gap-1 ${
+                            d.outcome === 'negative'
+                              ? 'bg-terracotta text-alabaster border-terracotta'
+                              : 'text-charcoal/50 border-charcoal/20 hover:border-terracotta hover:text-terracotta'
+                          }`}
+                        >
+                          <ThumbsDown className="w-3 h-3" />
+                          <span>No</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

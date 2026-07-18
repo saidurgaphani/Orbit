@@ -33,6 +33,19 @@ export default class MemoryService {
   }
 
   /**
+   * Helper to resolve either a Firebase UID or a Neon UUID to a Neon UUID.
+   */
+  async _resolveUserId(userId) {
+    if (!userId) return null;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(userId)) {
+      return userId;
+    }
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.firebaseUid, userId));
+    return user ? user.id : null;
+  }
+
+  /**
    * Evaluates if a question contains user facts worth remembering.
    * 
    * @param {string} question - The user question or message.
@@ -78,7 +91,7 @@ export default class MemoryService {
   /**
    * Retrieves user memories matching semantic relevance to the question.
    * 
-   * @param {string} userId - The Neon user ID.
+   * @param {string} userId - The Firebase UID or Neon user ID.
    * @param {string} question - The user question.
    * @returns {Promise<Array>} List of relevant memory strings.
    */
@@ -86,10 +99,16 @@ export default class MemoryService {
     if (!userId) throw new Error('userId is required for memory retrieval');
 
     try {
+      const dbUserId = await this._resolveUserId(userId);
+      if (!dbUserId) {
+        console.warn('[MemoryService] resolveUserId returned null');
+        return [];
+      }
+
       // 1. Fetch all memories for the user (guarantees isolation)
       const userMemories = await db.select()
         .from(schema.aiMemories)
-        .where(eq(schema.aiMemories.userId, userId))
+        .where(eq(schema.aiMemories.userId, dbUserId))
         .orderBy(desc(schema.aiMemories.createdAt));
 
       if (userMemories.length === 0) {
@@ -137,8 +156,11 @@ If no memories are relevant, return: []`;
     if (!userId) throw new Error('userId is required');
     if (!memoryData?.content?.trim()) throw new Error('Memory content is required');
 
+    const dbUserId = await this._resolveUserId(userId);
+    if (!dbUserId) throw new Error('Could not resolve user for memory insertion');
+
     const newRecord = {
-      userId,
+      userId: dbUserId,
       content: memoryData.content.trim(),
       memoryType: memoryData.memory_type || 'general',
       importance: memoryData.importance || 1,
@@ -159,10 +181,13 @@ If no memories are relevant, return: []`;
     if (!userId) throw new Error('userId is required');
     if (!memoryId) throw new Error('memoryId is required');
 
+    const dbUserId = await this._resolveUserId(userId);
+    if (!dbUserId) return false;
+
     const [deleted] = await db.delete(schema.aiMemories)
       .where(and(
         eq(schema.aiMemories.id, memoryId),
-        eq(schema.aiMemories.userId, userId)
+        eq(schema.aiMemories.userId, dbUserId)
       ))
       .returning();
 
@@ -175,9 +200,12 @@ If no memories are relevant, return: []`;
   async listMemories(userId) {
     if (!userId) throw new Error('userId is required');
     
+    const dbUserId = await this._resolveUserId(userId);
+    if (!dbUserId) return [];
+
     return db.select()
       .from(schema.aiMemories)
-      .where(eq(schema.aiMemories.userId, userId))
+      .where(eq(schema.aiMemories.userId, dbUserId))
       .orderBy(desc(schema.aiMemories.createdAt));
   }
 }

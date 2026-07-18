@@ -120,7 +120,12 @@ app.use((req, res, next) => {
     '/api/auth/test-session',
   ];
   
-  if (publicPaths.includes(req.path) || req.path.startsWith('/api/memory')) {
+  if (
+    publicPaths.includes(req.path) || 
+    req.path.startsWith('/api/memory') || 
+    req.path.startsWith('/decision') || 
+    req.path.startsWith('/api/decision')
+  ) {
     return next();
   }
   
@@ -285,10 +290,13 @@ async function verifyFirebaseIdToken(idToken) {
 // Reusable helper to verify Bearer token (Firebase ID token or test session) and get user
 async function verifyAndGetNeonUser(req) {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
+  let rawToken = null;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    rawToken = authHeader.slice(7).trim();
   }
-  const rawToken = authHeader.slice(7).trim();
+  if (!rawToken && req.cookies && req.cookies.session_token) {
+    rawToken = req.cookies.session_token;
+  }
   if (!rawToken) {
     return null;
   }
@@ -2295,14 +2303,11 @@ app.delete('/documents/:id', async (req, res) => {
 
 const MAX_DECISION_HISTORY = 50;
 
-async function readDecisions() {
+async function readDecisions(userId) {
+  if (!userId) return [];
   try {
-    const activeUserId = authStorage.getStore()?.userId;
-    const user = await getNeonUser(activeUserId);
-    if (!user) return [];
-    
     const dbDecisions = await db.select().from(dbSchema.decisions)
-      .where(eq(dbSchema.decisions.userId, user.id))
+      .where(eq(dbSchema.decisions.userId, userId))
       .orderBy(desc(dbSchema.decisions.createdAt));
       
     return dbDecisions.map(d => {
@@ -2330,6 +2335,10 @@ async function readDecisions() {
         outcome: parsedOptions.outcome || null,
         feedback: parsedOptions.feedback || null,
         reasoning: parsedReasoning,
+        tradeoffs: parsedOptions.tradeoffs || [],
+        risks: parsedOptions.risks || [],
+        missing_information: parsedOptions.missing_information || [],
+        next_step: parsedOptions.next_step || '',
         scenarioA: parsedOptions.scenarioA || null,
         scenarioB: parsedOptions.scenarioB || null,
         nextActions: parsedOptions.nextActions || [],
@@ -2342,11 +2351,9 @@ async function readDecisions() {
   }
 }
 
-async function writeDecisions(decisions) {
+async function writeDecisions(userId, decisions) {
+  if (!userId) return;
   try {
-    const activeUserId = authStorage.getStore()?.userId;
-    const user = await getNeonUser(activeUserId);
-    if (!user) return;
 
     for (let i = 0; i < decisions.length; i++) {
       const d = decisions[i];
@@ -2365,7 +2372,7 @@ async function writeDecisions(decisions) {
 
       const res = await db.insert(dbSchema.decisions).values({
         id: isUuid ? d.id : undefined,
-        userId: user.id,
+        userId: userId,
         question: d.question,
         recommendation: d.recommendation,
         reasoning: Array.isArray(d.reasoning) ? JSON.stringify(d.reasoning) : (d.reasoning || null),
@@ -2795,23 +2802,64 @@ Return ONLY a JSON object with this exact structure:
   res.json({ ...result, decisionId: decisionRecord.id });
 });
 
-// GET /decision/history — last 20 decisions
+// GET /decision/history — past decisions for authenticated user
 app.get('/decision/history', async (req, res) => {
-  const decisions = await readDecisions();
-  res.json({ decisions: decisions.slice(0, 20) });
+  const LOG = '[GET /decision/history]';
+  try {
+    const user = await verifyAndGetNeonUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized.' });
+    }
+
+    let decisions = await readDecisions(user.id);
+
+    // Support optional search filter
+    const search = req.query.search;
+    if (search && typeof search === 'string' && search.trim()) {
+      const q = search.trim().toLowerCase();
+      decisions = decisions.filter(d => 
+        (d.question && d.question.toLowerCase().includes(q)) ||
+        (d.domain && d.domain.toLowerCase().includes(q)) ||
+        (d.recommendation && d.recommendation.toLowerCase().includes(q))
+      );
+    }
+
+    res.json({ decisions: decisions.slice(0, 50) }); // return up to 50 historical records
+  } catch (err) {
+    console.error(`${LOG} Error:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch decision history.' });
+  }
 });
 
 // POST /decision/feedback — record outcome feedback on a past decision
 app.post('/decision/feedback', async (req, res) => {
-  const { decisionId, outcome, feedback } = req.body;
-  if (!decisionId) return res.status(400).json({ error: 'decisionId is required.' });
-  const decisions = await readDecisions();
-  const idx = decisions.findIndex(d => d.id === decisionId);
-  if (idx === -1) return res.status(404).json({ error: 'Decision not found.' });
-  decisions[idx].outcome = outcome;
-  decisions[idx].feedback = feedback;
-  await writeDecisions(decisions);
-  res.json({ success: true });
+  const LOG = '[POST /decision/feedback]';
+  try {
+    const user = await verifyAndGetNeonUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized.' });
+    }
+
+    const { decisionId, outcome, feedback } = req.body;
+    if (!decisionId) {
+      return res.status(400).json({ error: 'decisionId is required.' });
+    }
+
+    const decisions = await readDecisions(user.id);
+    const idx = decisions.findIndex(d => d.id === decisionId);
+    if (idx === -1) {
+      return res.status(404).json({ error: 'Decision not found or access denied.' });
+    }
+
+    decisions[idx].outcome = outcome;
+    decisions[idx].feedback = feedback;
+    
+    await writeDecisions(user.id, decisions);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`${LOG} Error:`, err.message);
+    res.status(500).json({ error: 'Failed to update feedback.' });
+  }
 });
 
 // ─── AI FINANCE BRAIN ─────────────────────────────────────────────────────────
