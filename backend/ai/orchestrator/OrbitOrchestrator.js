@@ -2,20 +2,52 @@ import GeminiProvider from '../providers/GeminiProvider.js';
 import IntentClassifier from '../intent/IntentClassifier.js';
 import ContextBuilder from '../context/ContextBuilder.js';
 import OutputValidator from '../validators/OutputValidator.js';
-import { readDb } from '../../healthDb.js';
+import SQLContextService from '../context/SQLContextService.js';
+import RAGService from '../context/RAGService.js';
+import ToolRegistry from '../tools/ToolRegistry.js';
 
 export default class OrbitOrchestrator {
   constructor(apiKey = process.env.GEMINI_API_KEY) {
     this.provider = new GeminiProvider(apiKey);
     this.classifier = new IntentClassifier(this.provider);
+    this.sqlContextService = new SQLContextService();
+    this.ragService = new RAGService(this.provider);
+    this.tools = new ToolRegistry();
+
+    // Register basic demo tools
+    this.registerDefaultTools();
+  }
+
+  registerDefaultTools() {
+    // Demo weather tool
+    this.tools.register('weather', ['weather', 'forecast', 'rain', 'temperature'], async (userId, params) => {
+      console.log(`[ToolRegistry] Running weather tool for user ${userId}`);
+      return {
+        temperature: "24°C",
+        condition: "Mostly Cloudy",
+        humidity: "65%",
+        alert: "No active weather alerts."
+      };
+    });
+
+    // Demo health syncer tool
+    this.tools.register('fit_sync', ['sync fit', 'sync health', 'google fit data'], async (userId, params) => {
+      console.log(`[ToolRegistry] Running fit_sync tool for user ${userId}`);
+      return {
+        status: "success",
+        syncedRecords: 42,
+        lastSyncTime: new Date().toISOString()
+      };
+    });
   }
 
   /**
    * Main entrypoint for processing copilot queries.
    * @param {object} reqPayload - The request payload containing { context, question, systemPrompt, files }.
+   * @param {string} [userId] - The authenticated Firebase user ID.
    * @returns {Promise<object>} The validated structured JSON response.
    */
-  async handleRequest(reqPayload) {
+  async handleRequest(reqPayload, userId = null) {
     const { context: clientContext, question, systemPrompt } = reqPayload;
 
     console.log(`[Orchestrator] Running intent detection for query: "${question.substring(0, 60)}..."`);
@@ -29,24 +61,42 @@ export default class OrbitOrchestrator {
     else if (systemPrompt.toLowerCase().includes('brief') || systemPrompt.toLowerCase().includes('priority')) contextHint = 'brief';
 
     const classification = await this.classifier.classify(question, contextHint);
-    const { intent, required_sources } = classification;
+    const { intent, required_sources, requires_rag } = classification;
     console.log(`[Orchestrator] Classified intent: ${intent} (Confidence: ${classification.confidence})`);
 
-    let db = null;
-    try {
-      db = readDb();
-    } catch (err) {
-      console.warn('[Orchestrator] Failed to read database, falling back to client context:', err.message);
+    // 1. Load SQL Context dynamically if userId is present
+    let sqlContext = {};
+    if (userId) {
+      console.log(`[Orchestrator] Fetching dynamic SQL context for user ${userId} with sources: ${required_sources.join(', ')}`);
+      sqlContext = await this.sqlContextService.getContext(userId, required_sources, { query: question });
     }
 
-    let filteredContext = {};
-    if (db) {
-      filteredContext = ContextBuilder.build(db, required_sources);
-    } else {
-      filteredContext = ContextBuilder.build(clientContext, required_sources);
+    // 2. Load RAG Context if document query and userId is present
+    let ragContext = '';
+    if (requires_rag && userId) {
+      console.log(`[Orchestrator] Performing pgvector RAG similarity retrieval for user ${userId}...`);
+      ragContext = await this.ragService.retrieveRelevantChunks(userId, question);
     }
 
-    const finalContext = { ...clientContext, ...filteredContext };
+    // 3. Match and execute external tools
+    let toolContext = null;
+    const matchedTool = this.tools.match(question);
+    if (matchedTool && userId) {
+      console.log(`[Orchestrator] Matched external tool: "${matchedTool}". Executing...`);
+      try {
+        toolContext = await this.tools.execute(matchedTool, userId);
+      } catch (err) {
+        console.error(`[Orchestrator] Tool execution failed:`, err);
+      }
+    }
+
+    // 4. Merge contexts
+    const finalContext = {
+      ...clientContext,
+      ...sqlContext,
+      ...(ragContext ? { documentSnippets: ragContext } : {}),
+      ...(toolContext ? { toolOutputs: toolContext } : {})
+    };
 
     const promptText = `
 Context Data:

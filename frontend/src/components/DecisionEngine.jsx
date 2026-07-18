@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { auth } from '../firebase';
 import { 
   Coins, 
   Heart, 
@@ -24,6 +25,7 @@ import {
   History,
   AlertCircle
 } from 'lucide-react';
+
 
 const BACKEND = 'http://localhost:5001';
 
@@ -179,51 +181,53 @@ function ThinkingPipeline({ active }) {
 
 // ─── CONFIDENCE METER ─────────────────────────────────────────────────────────
 function ConfidenceMeter({ confidence }) {
-  const c = confidenceColor(confidence);
+  let label = 'Medium';
+  let percentage = 60;
+  let barColor = 'bg-amber-500';
+  let textColor = 'text-amber-600';
+  let borderColor = 'border-amber-400';
+
+  if (typeof confidence === 'string') {
+    const upper = confidence.toUpperCase();
+    if (upper === 'HIGH') {
+      label = 'High';
+      percentage = 90;
+      barColor = 'bg-forest';
+      textColor = 'text-forest';
+      borderColor = 'border-forest';
+    } else if (upper === 'LOW') {
+      label = 'Low';
+      percentage = 30;
+      barColor = 'bg-terracotta';
+      textColor = 'text-terracotta';
+      borderColor = 'border-terracotta';
+    }
+  } else if (typeof confidence === 'number') {
+    percentage = Math.min(100, Math.max(0, confidence));
+    if (percentage >= 75) {
+      label = 'High';
+      barColor = 'bg-forest';
+      textColor = 'text-forest';
+      borderColor = 'border-forest';
+    } else if (percentage <= 35) {
+      label = 'Low';
+      barColor = 'bg-terracotta';
+      textColor = 'text-terracotta';
+      borderColor = 'border-terracotta';
+    }
+  }
+
   return (
     <div className="flex items-center gap-3">
       <div className="flex-1 h-2 bg-charcoal/10 relative overflow-hidden">
         <div
-          className={`h-full ${c.bar} transition-all duration-700`}
-          style={{ width: `${confidence}%` }}
+          className={`h-full ${barColor} transition-all duration-700`}
+          style={{ width: `${percentage}%` }}
         />
       </div>
-      <span className={`text-xs font-bold uppercase tracking-wider px-2 py-0.5 border ${c.text} ${c.border}`}>
-        {c.label} — {confidence}%
+      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border ${textColor} ${borderColor} bg-alabaster shrink-0`}>
+        {label} Confidence — {percentage}%
       </span>
-    </div>
-  );
-}
-
-// ─── SCENARIO CARD ────────────────────────────────────────────────────────────
-function ScenarioCard({ scenario, isRecommended, color }) {
-  if (!scenario) return null;
-  return (
-    <div className={`border p-5 bg-alabaster relative ${isRecommended ? 'border-forest shadow-[3px_3px_0px_0px_rgba(68,107,79,0.3)]' : 'border-charcoal/30'}`}>
-      {isRecommended && (
-        <span className="absolute -top-2.5 left-4 bg-forest text-alabaster text-[9px] uppercase font-bold tracking-wider px-2 py-0.5">
-          Orbit Recommends
-        </span>
-      )}
-      <div className="text-xs font-bold uppercase tracking-wider text-charcoal/60 mb-2">[ {scenario.label?.toUpperCase()} ]</div>
-      <p className="font-serif italic text-sm text-charcoal leading-relaxed mb-4">
-        "{scenario.outcome}"
-      </p>
-      <ul className="space-y-1.5">
-        {(scenario.impact || []).map((item, i) => {
-          const type = impactIcon(item);
-          return (
-            <li key={i} className={`text-xs font-sans flex items-start gap-2 ${
-              type === 'positive' ? 'text-forest' :
-              type === 'negative' ? 'text-terracotta' :
-              'text-charcoal/60'
-            }`}>
-              <span className="shrink-0 font-bold">{item.charAt(0)}</span>
-              <span>{item.slice(1).trim()}</span>
-            </li>
-          );
-        })}
-      </ul>
     </div>
   );
 }
@@ -232,7 +236,20 @@ function ScenarioCard({ scenario, isRecommended, color }) {
 function DecisionResult({ result, onNavigate, onFeedback }) {
   const [showReasoning, setShowReasoning] = useState(true);
   const [feedbackGiven, setFeedbackGiven] = useState(null);
-  const domain = DOMAIN_META[result.domain] || DOMAIN_META.general;
+
+  const summary = result.context_summary || {};
+  const category = summary.category || 'general';
+  const domain = DOMAIN_META[category] || DOMAIN_META.general;
+
+  // Compile active data sources from backend flags
+  const dataAvailable = summary.data_available || {};
+  const activeSources = [];
+  if (dataAvailable.has_income) activeSources.push('finance');
+  if (dataAvailable.has_expense_records) activeSources.push('finance');
+  if (dataAvailable.has_goals) activeSources.push('goals');
+  if (dataAvailable.has_health_records) activeSources.push('health');
+  if (dataAvailable.has_habits) activeSources.push('health');
+  if (summary.rag_chunks_used > 0) activeSources.push('documents');
 
   const handleFeedback = async (outcome) => {
     setFeedbackGiven(outcome);
@@ -248,11 +265,6 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
     onFeedback?.(outcome);
   };
 
-  const handleNextAction = (action) => {
-    const tab = NAV_ACTION_MAP[action];
-    if (tab && onNavigate) onNavigate(tab);
-  };
-
   return (
     <div className="space-y-5 animate-fadeIn">
       {/* Header + Domain */}
@@ -263,9 +275,9 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
             {domain.label} Decision
           </span>
         </div>
-        {result.dataUsed?.length > 0 && (
+        {[...new Set(activeSources)].length > 0 && (
           <div className="flex gap-1.5 flex-wrap justify-end">
-            {result.dataUsed.map(src => {
+            {[...new Set(activeSources)].map(src => {
               const meta = DATA_SOURCE_META[src] || { icon: null, label: src };
               const Icon = meta.icon;
               return (
@@ -280,12 +292,12 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
       </div>
 
       {/* Primary Recommendation Card */}
-      <div className="border border-charcoal p-6 bg-alabaster shadow-[4px_4px_0px_0px_rgba(30,32,30,0.12)]">
-        <span className="text-xs uppercase font-bold tracking-wider text-forest block mb-3">[ RECOMMENDATION ]</span>
+      <div className="border border-charcoal p-6 bg-alabaster shadow-[4px_4px_0px_0px_rgba(30,32,30,0.12)] animate-fadeIn">
+        <span className="text-xs uppercase font-bold tracking-wider text-forest block mb-3">[ DECISION ]</span>
         <p className="font-serif text-xl leading-snug text-charcoal font-semibold mb-5">
-          "{result.recommendation}"
+          "{result.decision}"
         </p>
-        <ConfidenceMeter confidence={result.confidence || 0} />
+        <ConfidenceMeter confidence={result.confidence} />
       </div>
 
       {/* Why / Reasoning */}
@@ -300,48 +312,77 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
           </span>
         </button>
         {showReasoning && (
-          <div className="px-5 pb-5 border-t border-charcoal/10">
-            <ul className="space-y-3 mt-4">
-              {(result.reasoning || []).map((r, i) => (
-                <li key={i} className="flex items-start gap-3 text-sm font-sans text-charcoal/80">
-                  <span className="w-5 h-5 flex items-center justify-center bg-charcoal text-alabaster text-[10px] font-bold shrink-0 mt-0.5">
-                    {i + 1}
-                  </span>
-                  <span className="leading-relaxed">{r}</span>
-                </li>
-              ))}
-            </ul>
+          <div className="px-5 pb-5 border-t border-charcoal/10 pt-4">
+            <p className="text-sm font-sans text-charcoal/80 leading-relaxed whitespace-pre-line">
+              {result.reasoning}
+            </p>
           </div>
         )}
       </div>
 
-      {/* Scenario Comparison — The WOW Feature */}
-      {result.scenarioA && result.scenarioB && (
-        <div>
-          <div className="text-xs uppercase font-bold tracking-wider text-charcoal/50 mb-3">[ WHAT IF? ] Scenario Comparison</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <ScenarioCard scenario={result.scenarioA} isRecommended={false} />
-            <ScenarioCard scenario={result.scenarioB} isRecommended={true} />
+      {/* Trade-offs & Risks side-by-side */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Trade-offs */}
+        <div className="border border-charcoal/30 p-5 bg-alabaster">
+          <div className="text-xs font-bold uppercase tracking-wider text-forest mb-3 flex items-center gap-2">
+            <Scale className="w-4.5 h-4.5 text-forest" />
+            <span>[ TRADE-OFFS ]</span>
           </div>
+          <ul className="space-y-2">
+            {(result.tradeoffs || []).map((t, idx) => (
+              <li key={idx} className="text-xs font-sans text-charcoal/70 flex items-start gap-2">
+                <span className="text-forest shrink-0 font-bold">↳</span>
+                <span className="leading-relaxed">{t}</span>
+              </li>
+            ))}
+            {(!result.tradeoffs || result.tradeoffs.length === 0) && (
+              <li className="text-xs font-sans text-charcoal/40 italic">No significant trade-offs identified.</li>
+            )}
+          </ul>
+        </div>
+
+        {/* Risks */}
+        <div className="border border-charcoal/30 p-5 bg-alabaster">
+          <div className="text-xs font-bold uppercase tracking-wider text-terracotta mb-3 flex items-center gap-2">
+            <AlertCircle className="w-4.5 h-4.5 text-terracotta" />
+            <span>[ RISKS ]</span>
+          </div>
+          <ul className="space-y-2">
+            {(result.risks || []).map((r, idx) => (
+              <li key={idx} className="text-xs font-sans text-terracotta/90 flex items-start gap-2">
+                <span className="shrink-0 font-bold">⚠️</span>
+                <span className="leading-relaxed">{r}</span>
+              </li>
+            ))}
+            {(!result.risks || result.risks.length === 0) && (
+              <li className="text-xs font-sans text-charcoal/40 italic">No major risks identified.</li>
+            )}
+          </ul>
+        </div>
+      </div>
+
+      {/* Missing Information Block */}
+      {result.missing_information && result.missing_information.length > 0 && (
+        <div className="border border-terracotta/40 p-5 bg-terracotta/[0.02] border-dashed">
+          <div className="text-xs font-bold uppercase tracking-wider text-terracotta mb-2">[ MISSING INFORMATION ]</div>
+          <ul className="space-y-1.5">
+            {result.missing_information.map((info, idx) => (
+              <li key={idx} className="text-xs font-sans text-charcoal/80 flex items-start gap-2">
+                <span className="text-terracotta shrink-0 font-black">?</span>
+                <span className="leading-relaxed">{info}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* Next Actions */}
-      {result.nextActions?.length > 0 && (
-        <div>
-          <div className="text-xs uppercase font-bold tracking-wider text-charcoal/50 mb-3">[ EXECUTE ] Next Steps</div>
-          <div className="flex gap-2 flex-wrap">
-            {result.nextActions.map(action => (
-              <button
-                key={action}
-                onClick={() => handleNextAction(action)}
-                className="text-xs font-bold uppercase tracking-wider px-4 py-2 border border-charcoal text-charcoal hover:bg-charcoal hover:text-alabaster transition-all flex items-center gap-1.5 hover:-translate-y-0.5"
-              >
-                <ArrowRight className="w-3.5 h-3.5" />
-                <span>{action}</span>
-              </button>
-            ))}
-          </div>
+      {/* Next Step Action Card */}
+      {result.next_step && (
+        <div className="border border-charcoal p-5 bg-charcoal text-alabaster shadow-[3px_3px_0px_0px_rgba(68,107,79,0.3)] animate-fadeIn">
+          <div className="text-xs font-bold uppercase tracking-wider text-forest mb-2">[ NEXT STEP ]</div>
+          <p className="font-serif text-sm italic mb-1 leading-relaxed">
+            "{result.next_step}"
+          </p>
         </div>
       )}
 
@@ -378,6 +419,7 @@ function DecisionResult({ result, onNavigate, onFeedback }) {
           </span>
         </div>
       )}
+
     </div>
   );
 }
@@ -389,12 +431,24 @@ function DecisionHistory({ onClose }) {
   const [expanded, setExpanded] = useState(null);
 
   useEffect(() => {
-    fetch(`${BACKEND}/decision/history`)
-      .then(r => r.json())
-      .then(d => setDecisions(d.decisions || []))
-      .catch(() => setDecisions([]))
-      .finally(() => setLoading(false));
+    const fetchHistory = async () => {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        const headers = idToken ? { 'Authorization': `Bearer ${idToken}` } : {};
+        const res = await fetch(`${BACKEND}/decision/history`, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setDecisions(data.decisions || []);
+      } catch (err) {
+        console.error('Failed to fetch decision history:', err);
+        setDecisions([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchHistory();
   }, []);
+
 
   return (
     <div>
@@ -478,6 +532,125 @@ function DecisionHistory({ onClose }) {
   );
 }
 
+// ─── AI MEMORIES MANAGER ──────────────────────────────────────────────────────
+function AIMemoriesManager({ onClose }) {
+  const [memories, setMemories] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchMemories = async () => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const headers = idToken ? { 'Authorization': `Bearer ${idToken}` } : {};
+      const res = await fetch(`${BACKEND}/api/memory`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setMemories(data.memories || []);
+    } catch (err) {
+      console.error('Failed to fetch memories:', err);
+      setMemories([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMemories();
+  }, []);
+
+  const handleDelete = async (id) => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${BACKEND}/api/memory/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+      if (res.ok) {
+        setMemories(prev => prev.filter(m => m.id !== id));
+      }
+    } catch (err) {
+      console.error('Failed to delete memory:', err);
+    }
+  };
+
+  return (
+    <div className="animate-fadeIn">
+      <div className="border-b border-charcoal pb-4 mb-6 flex justify-between items-center">
+        <div>
+          <span className="text-xs uppercase font-semibold tracking-wider text-forest block mb-1">[ AI PERSONAL MEMORY ]</span>
+          <h3 className="text-2xl font-serif font-bold">Orbit AI Memory</h3>
+          <p className="text-xs text-charcoal/50 font-sans mt-1">
+            Persisted facts and preferences Orbit uses to personalize your recommendations.
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className="text-xs font-bold uppercase tracking-wider text-charcoal/50 hover:text-charcoal transition-colors flex items-center gap-1.5 border border-charcoal/20 px-3 py-1.5 hover:border-charcoal"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>Back</span>
+        </button>
+      </div>
+
+      {loading && (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="border border-charcoal/10 bg-alabaster/40 p-4 animate-pulse space-y-2">
+              <div className="h-4 bg-charcoal/10 w-3/4 rounded" />
+              <div className="h-3 bg-charcoal/10 w-1/2 rounded" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!loading && memories.length === 0 && (
+        <div className="border border-dashed border-charcoal/30 p-12 text-center flex flex-col items-center justify-center bg-alabaster">
+          <Brain className="w-8 h-8 text-charcoal/30 mb-3" />
+          <p className="font-serif italic text-charcoal/60">AI memory is empty.</p>
+          <p className="text-xs text-charcoal/40 mt-2">When analyzing decisions, Orbit will propose facts to remember.</p>
+        </div>
+      )}
+
+      {!loading && memories.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {memories.map(m => {
+            const domain = DOMAIN_META[m.memoryType] || DOMAIN_META.general;
+            return (
+              <div key={m.id} className="border border-charcoal/20 bg-alabaster p-5 flex flex-col justify-between hover:border-charcoal transition-colors shadow-[3px_3px_0px_0px_rgba(30,32,30,0.05)]">
+                <div>
+                  <div className="flex justify-between items-center mb-3">
+                    <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 border ${domain.color}`}>
+                      {domain.label}
+                    </span>
+                    <span className="text-[9px] uppercase font-bold text-charcoal/40 font-mono">
+                      Importance: {m.importance}
+                    </span>
+                  </div>
+                  <p className="font-serif italic text-sm text-charcoal leading-relaxed">
+                    "{m.content}"
+                  </p>
+                </div>
+                <div className="border-t border-charcoal/10 pt-3 mt-4 flex justify-between items-center">
+                  <span className="text-[9px] text-charcoal/40 font-sans">
+                    Added: {new Date(m.createdAt).toLocaleDateString()}
+                  </span>
+                  <button
+                    onClick={() => handleDelete(m.id)}
+                    className="text-[9px] uppercase font-black tracking-widest text-terracotta hover:underline"
+                  >
+                    Delete Fact
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function DecisionEngine({ onNavigateToTab }) {
   const [question, setQuestion] = useState('');
@@ -486,7 +659,8 @@ export default function DecisionEngine({ onNavigateToTab }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
-  const [view, setView] = useState('advisor'); // 'advisor' | 'history'
+  const [view, setView] = useState('advisor'); // 'advisor' | 'history' | 'memory'
+  const [proposedMemory, setProposedMemory] = useState(null);
   const resultRef = useRef(null);
 
   const handleAnalyze = useCallback(async (q = question) => {
@@ -494,22 +668,40 @@ export default function DecisionEngine({ onNavigateToTab }) {
     setLoading(true);
     setError('');
     setResult(null);
+    setProposedMemory(null);
     setView('advisor');
 
     try {
-      const res = await fetch(`${BACKEND}/decision/analyze`, {
+      // Fetch user ID Token securely from Firebase
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        throw new Error('Authentication required. Please sign in again.');
+      }
+
+      // Merge additionalContext into question for backend context builder if present
+      const finalQuestion = additionalContext.trim() 
+        ? `${q.trim()}\n\n[Context: ${additionalContext.trim()}]` 
+        : q.trim();
+
+      const res = await fetch(`${BACKEND}/api/decision/analyze`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, additionalContext }),
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ question: finalQuestion }),
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Analysis failed (${res.status})`);
+        throw new Error(errData.message || errData.error || `Analysis failed (${res.status})`);
       }
 
       const data = await res.json();
       setResult(data);
+      if (data.proposed_memory) {
+        setProposedMemory(data.proposed_memory);
+      }
       // Scroll to result smoothly
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     } catch (err) {
@@ -518,6 +710,35 @@ export default function DecisionEngine({ onNavigateToTab }) {
       setLoading(false);
     }
   }, [question, additionalContext, loading]);
+
+  const handleSaveMemory = async () => {
+    if (!proposedMemory) return;
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) return;
+
+      const res = await fetch(`${BACKEND}/api/memory`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          content: proposedMemory.content,
+          memory_type: proposedMemory.memory_type,
+          importance: proposedMemory.importance,
+          source: 'user'
+        })
+      });
+
+      if (res.ok) {
+        setProposedMemory(null);
+      }
+    } catch (err) {
+      console.error('Failed to save memory:', err);
+    }
+  };
+
 
   const handleQuickQuestion = (q) => {
     setQuestion(q);
@@ -528,6 +749,7 @@ export default function DecisionEngine({ onNavigateToTab }) {
     setQuestion('');
     setAdditionalContext('');
     setResult(null);
+    setProposedMemory(null);
     setError('');
     setLoading(false);
     setShowContext(false);
@@ -545,6 +767,14 @@ export default function DecisionEngine({ onNavigateToTab }) {
     );
   }
 
+  if (view === 'memory') {
+    return (
+      <div>
+        <AIMemoriesManager onClose={() => setView('advisor')} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-0">
       {/* ── PAGE HEADER ── */}
@@ -557,13 +787,22 @@ export default function DecisionEngine({ onNavigateToTab }) {
               Your personal AI advisor — pulls live data from Health, Finance, Calendar &amp; Documents to give you personalized, explainable recommendations.
             </p>
           </div>
-          <button
-            onClick={() => setView('history')}
-            className="text-xs font-bold uppercase tracking-wider text-charcoal/50 border border-charcoal/20 px-3 py-2 hover:border-charcoal hover:text-charcoal transition-all shrink-0 flex items-center gap-1.5 hover:-translate-y-0.5"
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>History</span>
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={() => setView('history')}
+              className="text-xs font-bold uppercase tracking-wider text-charcoal/50 border border-charcoal/20 px-3 py-2 hover:border-charcoal hover:text-charcoal transition-all flex items-center gap-1.5 hover:-translate-y-0.5"
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>History</span>
+            </button>
+            <button
+              onClick={() => setView('memory')}
+              className="text-xs font-bold uppercase tracking-wider text-charcoal/50 border border-charcoal/20 px-3 py-2 hover:border-charcoal hover:text-charcoal transition-all flex items-center gap-1.5 hover:-translate-y-0.5"
+            >
+              <Brain className="w-3.5 h-3.5" />
+              <span>Memories</span>
+            </button>
+          </div>
         </div>
 
         {/* Quick-tap domain pills */}
@@ -576,6 +815,34 @@ export default function DecisionEngine({ onNavigateToTab }) {
           ))}
         </div>
       </div>
+
+      {/* ── PROPOSED MEMORY CONFIRMATION PANEL ── */}
+      {proposedMemory && (
+        <div className="border border-forest p-5 bg-forest/5 mb-5 animate-fadeIn flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-dashed shadow-[3px_3px_0px_0px_rgba(68,107,79,0.1)]">
+          <div>
+            <span className="text-[10px] uppercase font-black tracking-widest text-forest block mb-1">
+              [ AI MEMORY DETECTED ]
+            </span>
+            <p className="text-sm font-sans text-charcoal leading-relaxed">
+              Should Orbit remember this fact: <strong className="font-serif italic font-semibold text-forest">"{proposedMemory.content}"</strong>?
+            </p>
+          </div>
+          <div className="flex gap-2 shrink-0 w-full sm:w-auto">
+            <button
+              onClick={handleSaveMemory}
+              className="text-xs uppercase font-bold tracking-wider bg-forest text-alabaster px-4 py-2 border border-forest hover:bg-forest/90 transition-colors shadow-[2px_2px_0px_0px_rgba(30,32,30,0.1)]"
+            >
+              Remember
+            </button>
+            <button
+              onClick={() => setProposedMemory(null)}
+              className="text-xs uppercase font-bold tracking-wider text-charcoal/50 border border-charcoal/20 px-4 py-2 hover:border-charcoal hover:text-charcoal transition-colors bg-alabaster"
+            >
+              Ignore
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── QUESTION INPUT ── */}
       <div className="border border-charcoal p-5 md:p-7 bg-alabaster mb-5">

@@ -11,6 +11,11 @@ import { readDb, writeDb, calculateHealthScore, getUserGoogleTokens, saveUserGoo
 import { authStorage } from './authStore.js';
 import crypto from 'crypto';
 import OrbitOrchestrator from './ai/orchestrator/OrbitOrchestrator.js';
+import DecisionEngineService from './ai/decision/DecisionEngineService.js';
+import DecisionContextBuilderService from './ai/decision/DecisionContextBuilderService.js';
+import DecisionOrchestrator from './ai/decision/DecisionOrchestrator.js';
+import MemoryService from './ai/memory/MemoryService.js';
+
 import { db } from './db/index.js';
 import * as dbSchema from './db/schema.js';
 import { eq, and, not, inArray, desc } from 'drizzle-orm';
@@ -107,10 +112,15 @@ app.use((req, res, next) => {
     '/api/auth/google',
     '/api/auth/google/callback',
     '/auth/google',
-    '/auth/google/callback'
+    '/auth/google/callback',
+    // Decision Engine routes handle their own Firebase token verification
+    '/api/decision/analyze',
+    '/api/decision',
+    // Dev-only test session injection (disabled in production by the route handler itself)
+    '/api/auth/test-session',
   ];
   
-  if (publicPaths.includes(req.path)) {
+  if (publicPaths.includes(req.path) || req.path.startsWith('/api/memory')) {
     return next();
   }
   
@@ -136,6 +146,18 @@ if (process.env.GEMINI_API_KEY) {
 } else {
   console.log('No Gemini API key detected. Initializing fallback OrbitOrchestrator...');
   orchestrator = new OrbitOrchestrator(null);
+}
+
+// Centralized AI orchestration wrapper
+async function orchestrateAI(prompt, systemInstruction = '', options = {}) {
+  if (!orchestrator) {
+    throw new Error('AI Orchestrator not initialized.');
+  }
+  if (options.json || options.responseMimeType === 'application/json') {
+    return await orchestrator.provider.generateStructured(prompt, systemInstruction, null, options);
+  } else {
+    return await orchestrator.provider.generate(prompt, systemInstruction, options);
+  }
 }
 
 // ─── GOOGLE OAUTH CLIENT ─────────────────────────────────────────────────────
@@ -220,7 +242,7 @@ app.post('/copilot', async (req, res) => {
   }
 
   try {
-    const result = await orchestrator.handleRequest(req.body);
+    const result = await orchestrator.handleRequest(req.body, req.userId);
     return res.json(result);
   } catch (error) {
     console.error('AI Orchestration error:', error.message);
@@ -258,6 +280,29 @@ async function verifyFirebaseIdToken(idToken) {
     console.error('Error verifying Firebase token:', err);
     return null;
   }
+}
+
+// Reusable helper to verify Bearer token (Firebase ID token or test session) and get user
+async function verifyAndGetNeonUser(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  const rawToken = authHeader.slice(7).trim();
+  if (!rawToken) {
+    return null;
+  }
+
+  let firebaseUid = null;
+  const firebaseUser = await verifyFirebaseIdToken(rawToken);
+  if (firebaseUser && firebaseUser.localId) {
+    firebaseUid = firebaseUser.localId;
+  } else if (sessions[rawToken]) {
+    firebaseUid = sessions[rawToken].user?.id;
+  }
+
+  if (!firebaseUid) return null;
+  return getNeonUser(firebaseUid);
 }
 
 // Session status check (GET)
@@ -341,6 +386,34 @@ app.post('/api/auth/logout', (req, res) => {
   res.setHeader('Set-Cookie', `session_token=; Path=/; Max-Age=0; HttpOnly`);
   res.json({ success: true });
 });
+
+// ─── DEV-ONLY: Test session injection ────────────────────────────────────────
+//  This endpoint exists ONLY to support automated integration tests.
+//  It creates a session entry in the server session store without requiring
+//  a real Firebase ID token — useful for CI/CD and local dev testing.
+//  It is completely disabled outside development mode.
+if (process.env.NODE_ENV !== 'production') {
+  app.post('/api/auth/test-session', (req, res) => {
+    const { firebaseUid, sessionToken, name, email } = req.body;
+    if (!firebaseUid || !sessionToken) {
+      return res.status(400).json({ error: 'firebaseUid and sessionToken are required.' });
+    }
+    // Inject session directly — mirrors what /api/auth/session does after Firebase verification
+    sessions[sessionToken] = {
+      user: {
+        id:       firebaseUid,
+        name:     name  || 'Test User',
+        email:    email || `${firebaseUid}@test.com`,
+        authProvider: 'test',
+        createdAt: new Date().toISOString(),
+      },
+      createdAt: new Date().toISOString(),
+    };
+    console.log(`[DEV] Test session created for Firebase UID: ${firebaseUid}`);
+    return res.json({ success: true, sessionToken });
+  });
+}
+
 
 // ─── GOOGLE CALENDAR OAUTH ROUTES ────────────────────────────────────────────
 
@@ -777,15 +850,7 @@ IMPORTANT: Return ONLY raw JSON. No markdown backticks.
           });
           responseText = message.content[0].text;
         } else if (googleGenAI) {
-          const model = googleGenAI.getGenerativeModel({
-            model: 'gemini-2.0-flash',
-            generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-          });
-          const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: promptText }] }],
-            systemInstruction: "You are the Orbit reasoning core. Return only a JSON object. No markdown."
-          });
-          responseText = result.response.text();
+          responseText = await orchestrateAI(promptText, "You are the Orbit reasoning core. Return only a JSON object. No markdown.", { temperature: 0.1 });
         }
 
         try {
@@ -1677,21 +1742,11 @@ Return your response STRICTLY as a JSON object with the following fields (no mar
       });
       responseText = message.content[0].text;
     } else if (googleGenAI) {
-      const model = googleGenAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-      });
-      
       const parts = [
         { text: promptText },
         { inlineData: { data: fileBase64, mimeType: fileType || 'application/pdf' } }
       ];
-
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts }],
-        systemInstruction: "You are the Orbit medical analysis core. Return only a JSON object. No markdown, no backticks."
-      });
-      responseText = result.response.text();
+      responseText = await orchestrateAI(parts, "You are the Orbit medical analysis core. Return only a JSON object. No markdown, no backticks.", { temperature: 0.1 });
     }
 
     let parsedJSON = JSON.parse(responseText.trim());
@@ -1744,15 +1799,7 @@ Return your response STRICTLY as a JSON array of objects (no markdown wrappers, 
   try {
     let responseText = '';
     if (googleGenAI) {
-      const model = googleGenAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-      });
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: promptText }] }],
-        systemInstruction: "You are Orbit's physiological coaching engine. Return only a JSON array. No markdown."
-      });
-      responseText = result.response.text();
+      responseText = await orchestrateAI(promptText, "You are Orbit's physiological coaching engine. Return only a JSON array. No markdown.", { temperature: 0.2 });
     } else if (anthropic) {
       const message = await anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022',
@@ -1853,6 +1900,13 @@ async function writeDocs(docs) {
           updatedAt: new Date()
         }
       });
+
+      // Trigger RAG chunking and embedding ingestion asynchronously
+      if (doc.extractedText && orchestrator && orchestrator.ragService) {
+        orchestrator.ragService.ingestDocument(user.id, doc.id, doc.extractedText).catch(e => {
+          console.error('[writeDocs RAG ingestion error]:', e);
+        });
+      }
     }
 
     const currentIds = docs.map(d => d.id);
@@ -2030,16 +2084,11 @@ Do not include any text outside the JSON object.
       let responseText = '';
 
       if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({
-          model: 'gemini-2.0-flash',
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-        });
         const parts = [
           { text: extractionPrompt },
           { inlineData: { data: base64, mimeType } }
         ];
-        const result = await model.generateContent({ contents: [{ role: 'user', parts }] });
-        responseText = result.response.text();
+        responseText = await orchestrateAI(parts, "You are Orbit's Document Intelligence Core. Return only a JSON object. No markdown.", { temperature: 0.1 });
       } else if (anthropic) {
         const isImage = mimeType.startsWith('image/');
         const contentParts = [{ type: 'text', text: extractionPrompt }];
@@ -2071,6 +2120,7 @@ Do not include any text outside the JSON object.
   }
 
   const catMeta = CATEGORY_META[extracted.category] || { icon: '📄', color: 'charcoal' };
+  const extractedText = `${extracted.summary || ''}\n\nMetadata:\n${JSON.stringify(extracted.metadata || {}, null, 2)}\n\nInsight: ${extracted.aiInsight || ''}`;
   const doc = {
     id: generateDocId(),
     fileName,
@@ -2086,6 +2136,7 @@ Do not include any text outside the JSON object.
     relatedTypes: extracted.relatedTypes || [],
     aiInsight: extracted.aiInsight || '',
     base64, // stored for AI Q&A chat
+    extractedText
   };
 
   docs.unshift(doc); // newest first
@@ -2160,9 +2211,7 @@ Return only the JSON array, no other text.
   try {
     let responseText = '';
     if (googleGenAI) {
-      const model = googleGenAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.1 } });
-      const result = await model.generateContent(prompt);
-      responseText = result.response.text();
+      responseText = await orchestrateAI(prompt, '', { temperature: 0.1 });
     } else if (anthropic) {
       const message = await anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022', max_tokens: 512, temperature: 0.1,
@@ -2217,9 +2266,7 @@ app.post('/documents/chat', async (req, res) => {
       if (doc.base64 && doc.mimeType) {
         parts.push({ inlineData: { data: doc.base64, mimeType: doc.mimeType } });
       }
-      const model = googleGenAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.3 } });
-      const result = await model.generateContent({ contents: [{ role: 'user', parts }] });
-      answer = result.response.text();
+      answer = await orchestrateAI(parts, '', { temperature: 0.3 });
     } else if (anthropic) {
       const message = await anthropic.messages.create({
         model: 'claude-3-5-sonnet-20241022', max_tokens: 512, temperature: 0.3,
@@ -2715,12 +2762,7 @@ Return ONLY a JSON object with this exact structure:
         });
         responseText = message.content[0].text;
       } else if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({
-          model: 'gemini-2.0-flash',
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-        });
-        const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: promptText }] }] });
-        responseText = r.response.text();
+        responseText = await orchestrateAI(promptText, "You are Orbit's Decision Core. Return only a JSON object. No markdown.", { temperature: 0.2 });
       }
 
       let clean = responseText.trim();
@@ -3062,12 +3104,7 @@ Return ONLY a JSON object with this exact structure:
       });
       responseText = message.content[0].text;
     } else if (googleGenAI) {
-      const model = googleGenAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-      });
-      const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-      responseText = r.response.text();
+      responseText = await orchestrateAI(prompt, '', { temperature: 0.1 });
     }
 
     let clean = responseText.trim();
@@ -3198,9 +3235,7 @@ Include specific rupee numbers. Do NOT include any JSON formatting or quotes in 
         });
         story = message.content[0].text;
       } else if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.3 } });
-        const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-        story = r.response.text();
+        story = await orchestrateAI(prompt, '', { temperature: 0.3 });
       }
     } catch (aiErr) {
       console.warn('[Finance Story] AI failed, falling back to local description:', aiErr.message);
@@ -3442,12 +3477,11 @@ app.post('/scam/analyze', async (req, res) => {
           });
           scanText = message.content[0].text;
         } else if (googleGenAI) {
-          const model = googleGenAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-          const r = await model.generateContent([
+          const parts = [
             visionPrompt,
             { inlineData: { data: base64, mimeType: mimeType || 'image/png' } }
-          ]);
-          scanText = r.response.text();
+          ];
+          scanText = await orchestrateAI(parts);
         }
       } catch (ocrErr) {
         console.error('[Scam Shield] Vision OCR failed:', ocrErr.message);
@@ -3504,12 +3538,7 @@ Return ONLY a JSON object with this exact structure:
         });
         responseText = message.content[0].text;
       } else if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({
-          model: 'gemini-2.0-flash',
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-        });
-        const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: systemPrompt }] }] });
-        responseText = r.response.text();
+        responseText = await orchestrateAI(systemPrompt, '', { temperature: 0.2 });
       }
 
       let clean = responseText.trim();
@@ -3823,12 +3852,7 @@ Generate 3-6 milestones and 2-4 habits appropriate for the goal type. Keep miles
         });
         responseText = msg.content[0].text;
       } else if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({
-          model: 'gemini-2.0-flash',
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.3 }
-        });
-        const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-        responseText = r.response.text();
+        responseText = await orchestrateAI(prompt, '', { temperature: 0.3 });
       }
 
       let clean = responseText.trim();
@@ -4219,12 +4243,7 @@ Rules:
         });
         responseText = msg.content[0].text;
       } else if (googleGenAI) {
-        const model = googleGenAI.getGenerativeModel({
-          model: 'gemini-2.0-flash',
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.3 }
-        });
-        const r = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-        responseText = r.response.text();
+        responseText = await orchestrateAI(prompt, '', { temperature: 0.3 });
       }
 
       let clean = responseText.trim();
@@ -4354,8 +4373,392 @@ app.post('/goals/:id/replan', async (req, res) => {
   });
 });
 
-// ─── SERVER START ─────────────────────────────────────────────────────────────
+// ─── DECISION ENGINE API ──────────────────────────────────────────────────────
+//
+//  POST /api/decision
+//
+//  Accepts:
+//    { question, retrieved_context? }
+//
+//  The route does NOT accept user_context from the request body.
+//  ALL user context is fetched from the authenticated user's Neon records.
+//
+//  Returns:
+//    { success, userId, decision_context, result }
+//      decision_context — the structured DB data sent to the Decision Engine
+//      result           — the full Orbit Decision Engine output
+//
+//  Authentication: Firebase token (Authorization: Bearer <token>)
+//  The user_id is ALWAYS taken from the verified token, never from the request body.
 
+const decisionEngine = new DecisionEngineService();
+const decisionCtxBuilder = new DecisionContextBuilderService();
+const decisionOrchestrator = new DecisionOrchestrator();
+const memoryService = new MemoryService();
+
+
+app.post('/api/decision', async (req, res) => {
+  try {
+    // ── 1. Auth: extract and verify token ────────────────────────────────────
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header.' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+    let firebaseUid = null;
+
+    // Primary: lookup via session store (how the rest of the app works)
+    if (sessions[idToken]) {
+      firebaseUid = sessions[idToken];
+      console.log(`[/api/decision] Session auth resolved UID: ${firebaseUid}`);
+    } else {
+      // Fallback: try treating the token as a Firebase UID directly (dev/test)
+      // In production, replace with Firebase Admin SDK verifyIdToken
+      console.warn('[/api/decision] Token not found in session store. Cannot authenticate.');
+      return res.status(403).json({ error: 'Authentication failed. Please log in again.' });
+    }
+
+    // ── 2. Validate question ──────────────────────────────────────────────────
+    const { question, retrieved_context = [] } = req.body;
+
+    if (!question || typeof question !== 'string' || question.trim() === '') {
+      return res.status(400).json({ error: 'A non-empty question string is required.' });
+    }
+
+    const cleanQuestion = question.trim();
+    console.log(`[/api/decision] User ${firebaseUid}: "${cleanQuestion.substring(0, 80)}"`);
+
+    // ── 3. Build real context from Neon DB ────────────────────────────────────
+    //  All data is scoped to the authenticated user's Firebase UID.
+    //  No user_context from the request body is used.
+    console.log(`[/api/decision] Building decision context from Neon for user ${firebaseUid}...`);
+    const decisionContext = await decisionCtxBuilder.buildDecisionContext(firebaseUid, cleanQuestion);
+
+    console.log(`[/api/decision] Context built — category: ${decisionContext.decision_category}`);
+    console.log(`[/api/decision] Data availability:`, decisionContext.data_availability);
+
+    // ── 4. Convert DB context to Decision Engine user_context format ──────────
+    //  The DecisionEngineService expects a flat user_context object.
+    //  Map the structured DB context to that format.
+    const fc = decisionContext.financial_context;
+    const engineUserContext = {
+      // Financial
+      monthly_income:    fc.monthly_income,
+      monthly_expenses:  fc.monthly_expenses,
+      current_savings:   fc.current_savings,
+      upcoming_expenses: null,            // Not a separate DB column yet — future enhancement
+      financial_goals:   decisionContext.goals
+                           ? decisionContext.goals.map(g => `${g.title} (${g.progress_pct}% complete)`)
+                           : [],
+      monthly_budget:    fc.monthly_budget,
+      spending_by_category: fc.spending_by_category,
+
+      // Career (from profile if stored)
+      job_title:         undefined,
+      years_experience:  undefined,
+
+      // Health
+      ...(decisionContext.health ? {
+        avg_steps:         decisionContext.health.avg_steps,
+        avg_sleep_minutes: decisionContext.health.avg_sleep_minutes,
+      } : {}),
+    };
+
+    // ── 5. Run Decision Engine ────────────────────────────────────────────────
+    const result = await decisionEngine.decide({
+      question: cleanQuestion,
+      user_context:      engineUserContext,
+      retrieved_context: Array.isArray(retrieved_context) ? retrieved_context : [],
+    });
+
+    // ── 6. Respond ────────────────────────────────────────────────────────────
+    return res.json({
+      success: true,
+      userId:  firebaseUid,
+      decision_context: decisionContext,   // Full DB context (for transparency / debugging)
+      result,                              // Orbit Decision Engine output
+    });
+
+  } catch (err) {
+    console.error('[/api/decision] Unhandled error:', err.message);
+    return res.status(500).json({
+      error: 'Decision Engine encountered an internal error.',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+});
+
+// ─── DECISION ENGINE — ANALYZE API ───────────────────────────────────────────
+//
+//  POST /api/decision/analyze
+//
+//  The canonical, production-grade Decision Engine endpoint.
+//
+//  Authentication (in priority order):
+//    1. Firebase ID Token (Authorization: Bearer <firebase_id_token>)
+//       → Verified via Firebase REST API (verifyFirebaseIdToken)
+//       → UID extracted from token — never trusted from request body
+//    2. Session Token (Authorization: Bearer <session_token>)
+//       → Backward compatible with the app's session-based auth
+//       → Checked only if Firebase token verification fails
+//
+//  Request body:
+//    { "question": "Can I buy a laptop worth ₹70000?" }
+//
+//  Response:
+//    {
+//      "success": true,
+//      "decision": "...",
+//      "reasoning": "...",
+//      "tradeoffs": [...],
+//      "risks": [...],
+//      "missing_information": [...],
+//      "next_step": "...",
+//      "confidence": "HIGH|MEDIUM|LOW",
+//      "context_summary": { "category": "...", "data_available": {...} }
+//    }
+//
+//  Errors:
+//    400  — Missing or invalid question
+//    401  — No Authorization header
+//    403  — Token verification failed
+//    404  — Authenticated user not found in Neon
+//    429  — AI provider rate limit
+//    500  — Internal server error (details hidden in production)
+//    504  — AI request timed out
+
+const DECISION_TIMEOUT_MS = 30_000; // 30 second AI timeout
+
+app.post('/api/decision/analyze', async (req, res) => {
+  const LOG = '[/api/decision/analyze]';
+
+  // ── STEP 1: Input validation ───────────────────────────────────────────────
+  const { question } = req.body;
+
+  if (!question || typeof question !== 'string') {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_INPUT',
+      message: 'A question is required and must be a non-empty string.',
+    });
+  }
+
+  const cleanQuestion = question.trim();
+  if (cleanQuestion.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_INPUT',
+      message: 'Question must not be blank.',
+    });
+  }
+  if (cleanQuestion.length > 1000) {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_INPUT',
+      message: 'Question must be 1000 characters or fewer.',
+    });
+  }
+
+  // ── STEP 2: Extract token ─────────────────────────────────────────────────
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      success: false,
+      error: 'MISSING_TOKEN',
+      message: 'Authorization header with Bearer token is required.',
+    });
+  }
+  const rawToken = authHeader.slice(7).trim();
+  if (!rawToken) {
+    return res.status(401).json({
+      success: false,
+      error: 'MISSING_TOKEN',
+      message: 'Bearer token is empty.',
+    });
+  }
+
+  // ── STEP 3: Firebase token verification (primary) ─────────────────────────
+  let firebaseUid = null;
+  let authMethod = null;
+
+  const firebaseUser = await verifyFirebaseIdToken(rawToken);
+  if (firebaseUser && firebaseUser.localId) {
+    firebaseUid = firebaseUser.localId;
+    authMethod = 'firebase_token';
+    console.log(`${LOG} Firebase token verified. UID: ${firebaseUid}`);
+  } else if (sessions[rawToken]) {
+    // Session token fallback
+    const sessionData = sessions[rawToken];
+    firebaseUid = sessionData.user?.id;
+    authMethod = 'session_token';
+    console.log(`${LOG} Session token accepted. UID: ${firebaseUid}`);
+  }
+
+  if (!firebaseUid) {
+    console.warn(`${LOG} Authentication failed. Token is neither a valid Firebase token nor a known session.`);
+    return res.status(403).json({
+      success: false,
+      error: 'AUTH_FAILED',
+      message: 'Authentication failed. Please sign in again.',
+    });
+  }
+
+  // ── STEP 4: Run Decision Engine via Orchestrator ──────────────────────────
+  try {
+    const charityPromise = decisionOrchestrator.analyzeDecision(firebaseUid, cleanQuestion, {
+      threshold: 0.70,
+      limit: 3
+    });
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('TIMEOUT')), DECISION_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([charityPromise, timeoutPromise]);
+
+    // Persist to Neon Database Decisions Table
+    try {
+      const user = await getNeonUser(firebaseUid);
+      if (user) {
+        let numericConfidence = 60;
+        if (result.confidence === 'HIGH') numericConfidence = 90;
+        if (result.confidence === 'LOW') numericConfidence = 30;
+
+        const optionsObj = {
+          domain: result.context_summary?.category || 'general',
+          confidence: numericConfidence,
+          tradeoffs: result.tradeoffs || [],
+          risks: result.risks || [],
+          missing_information: result.missing_information || [],
+          next_step: result.next_step || '',
+        };
+
+        const decisionRecord = {
+          userId: user.id,
+          question: cleanQuestion,
+          recommendation: result.decision,
+          reasoning: result.reasoning,
+          options: optionsObj,
+        };
+
+        await db.insert(dbSchema.decisions).values(decisionRecord);
+        console.log(`${LOG} Decision successfully saved to Neon.`);
+      }
+    } catch (saveErr) {
+      console.error(`${LOG} Failed to save decision to Neon:`, saveErr.message);
+    }
+
+    // Run AI Memory Detection (non-fatal, non-blocking fallback)
+    try {
+      const proposedMemory = await memoryService.detectAndExtractMemory(cleanQuestion);
+      if (proposedMemory) {
+        result.proposed_memory = proposedMemory;
+        console.log(`${LOG} Proposed memory detected: "${proposedMemory.content}" (${proposedMemory.memory_type})`);
+      }
+    } catch (memErr) {
+      console.warn(`${LOG} Memory detection failed (non-fatal):`, memErr.message);
+    }
+
+    return res.status(200).json(result);
+  } catch (err) {
+    if (err.message === 'TIMEOUT') {
+      console.error(`${LOG} Decision Orchestrator timed out.`);
+      return res.status(504).json({
+        success: false,
+        error: 'AI_TIMEOUT',
+        message: 'The decision analysis took too long. Please try again.',
+      });
+    }
+    if (err.message?.includes('429') || err.message?.includes('quota')) {
+      console.warn(`${LOG} AI provider rate limit hit.`);
+      return res.status(429).json({
+        success: false,
+        error: 'RATE_LIMIT',
+        message: 'AI service is temporarily busy. Please wait a moment and try again.',
+      });
+    }
+    console.error(`${LOG} Decision Orchestrator error:`, err.message);
+    return res.status(500).json({
+      success: false,
+      error: 'AI_ERROR',
+      message: 'The decision analysis failed. Please try again.',
+    });
+  }
+});
+
+
+// ─── AI MEMORY CRUD ENDPOINTS ────────────────────────────────────────────────
+// POST /api/memory — Save approved memory
+app.post('/api/memory', async (req, res) => {
+  const LOG = '[POST /api/memory]';
+  try {
+    const user = await verifyAndGetNeonUser(req);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Unauthorized.' });
+    }
+
+    const { content, memory_type, importance, source } = req.body;
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ success: false, error: 'INVALID_INPUT', message: 'Memory content is required.' });
+    }
+
+    const memory = await memoryService.addMemory(user.id, {
+      content,
+      memory_type,
+      importance,
+      source
+    });
+
+    console.log(`${LOG} Memory saved for user ${user.id}: "${content.substring(0, 40)}..."`);
+    return res.status(200).json({ success: true, memory });
+  } catch (err) {
+    console.error(`${LOG} Error:`, err.message);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: 'Failed to save memory.' });
+  }
+});
+
+// GET /api/memory — List all memories for the user
+app.get('/api/memory', async (req, res) => {
+  const LOG = '[GET /api/memory]';
+  try {
+    const user = await verifyAndGetNeonUser(req);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Unauthorized.' });
+    }
+
+    const memories = await memoryService.listMemories(user.id);
+    return res.status(200).json({ success: true, memories });
+  } catch (err) {
+    console.error(`${LOG} Error:`, err.message);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: 'Failed to fetch memories.' });
+  }
+});
+
+// DELETE /api/memory/:id — Delete a memory
+app.delete('/api/memory/:id', async (req, res) => {
+  const LOG = `[DELETE /api/memory/${req.params.id}]`;
+  try {
+    const user = await verifyAndGetNeonUser(req);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Unauthorized.' });
+    }
+
+    const success = await memoryService.deleteMemory(user.id, req.params.id);
+    if (!success) {
+      return res.status(404).json({ success: false, error: 'NOT_FOUND', message: 'Memory not found or access denied.' });
+    }
+
+    console.log(`${LOG} Memory deleted for user ${user.id}`);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error(`${LOG} Error:`, err.message);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: 'Failed to delete memory.' });
+  }
+});
+
+
+// ─── SERVER START ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\nEVA Copilot Core running on http://localhost:${PORT}`);
   console.log(`  /copilot             — AI reasoning core`);
@@ -4369,9 +4772,11 @@ app.listen(PORT, () => {
   console.log(`  /documents/search    — Document Brain: NL search`);
   console.log(`  /documents/chat      — Document Brain: per-doc AI Q&A`);
   console.log(`  /documents/:id       — Document Brain: delete`);
-  console.log(`  /decision/analyze    — Decision Engine: multi-domain reasoning`);
+  console.log(`  /decision/analyze    — Decision Engine: production reasoning endpoint (POST)`);
+  console.log(`  /decision            — Decision Engine: legacy endpoint`);
   console.log(`  /decision/history    — Decision Engine: past decisions`);
   console.log(`  /decision/feedback   — Decision Engine: record outcome`);
+
   console.log(`  /finance/dashboard   — Finance Brain: get overall dashboard data`);
   console.log(`  /finance/transactions— Finance Brain: add transaction`);
   console.log(`  /finance/expense/parse — Finance Brain: parse natural language entry`);
@@ -4389,4 +4794,4 @@ app.listen(PORT, () => {
   console.log(`  /goals/:id/replan    — Goal Engine: adaptive replanning\n`);
 });
 
-// Reload watch re-trigger comment
+// Reload watch re-trigger comment: pluggable AI architecture second retrigger
