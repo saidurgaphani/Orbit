@@ -30,7 +30,7 @@ __pycache__/
 
 # Developer Documentation & Templates
 @docs/
-context/
+/context/
 prompts/
 docs/
 *.docx
