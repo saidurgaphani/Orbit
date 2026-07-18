@@ -26,7 +26,7 @@ import {
   ArrowLeft
 } from 'lucide-react';
 
-const BACKEND = 'http://localhost:5001';
+const BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 const HEALTH_STATUS = {
   on_track:  { label: 'On Track',   icon: CheckCircle2, color: 'text-forest border-forest bg-forest/5' },

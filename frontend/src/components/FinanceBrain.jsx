@@ -32,7 +32,7 @@ import {
   Target
 } from 'lucide-react';
 
-const BACKEND = 'http://localhost:5001';
+const BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 const CATEGORY_ICONS = {
   Food: Utensils,

@@ -34,7 +34,7 @@ import GoalEngine from './components/GoalEngine';
 import OnboardingWizard from './components/OnboardingWizard';
 
 
-const BACKEND = 'http://localhost:5001';
+const BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 const FALLBACK_LOCATION = { lat: 19.0760, lon: 72.8777, name: 'Mumbai' };
 
 // Helper for weather icons

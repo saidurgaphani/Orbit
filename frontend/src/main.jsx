@@ -8,11 +8,12 @@ import Login from './landing/Login.jsx'
 import Signup from './landing/Signup.jsx'
 import { AuthProvider } from './context/AuthContext'
 
-// Global fetch interceptor to support credentials (cookies) in cross-port requests
+// Global fetch interceptor to support credentials (cookies) in cross-origin requests
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 const originalFetch = window.fetch;
 window.fetch = function (url, options = {}) {
   const urlStr = url.toString();
-  if (urlStr.startsWith('http://localhost:5001') || urlStr.startsWith('/') || !urlStr.startsWith('http')) {
+  if (urlStr.startsWith(API_URL) || urlStr.startsWith('http://localhost:5001') || urlStr.startsWith('/') || !urlStr.startsWith('http')) {
     options.credentials = 'include';
   }
   return originalFetch(url, options);

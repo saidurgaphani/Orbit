@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Shield, MapPin, Calendar, Check, ArrowRight } from 'lucide-react';
 import { auth } from '../firebase';
 
-const BACKEND = 'http://localhost:5001';
+const BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export default function OnboardingWizard({ user, onComplete }) {
   const [step, setStep] = useState(1);

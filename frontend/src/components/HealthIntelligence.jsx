@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, RefreshCw, AlertTriangle } from 'lucide-react';
 import { auth } from '../firebase';
 
-const BACKEND = 'http://localhost:5001';
+const BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export default function HealthIntelligence({ selectedDate }) {
   // Connection states
