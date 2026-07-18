@@ -32,7 +32,16 @@ const MAX_VAULT_DOCS = 100;
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-const allowedOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:3000'];
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'http://localhost:3000',
+  // Production Vercel frontend
+  'https://orbit-6echd05ja-phanis-projects-1fd2babd.vercel.app',
+  // Support any additional origins via env variable (comma-separated)
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : []),
+];
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
@@ -169,7 +178,7 @@ async function orchestrateAI(prompt, systemInstruction = '', options = {}) {
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const GOOGLE_REDIRECT_URI = 'http://localhost:5001/auth/google/callback';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5001/auth/google/callback';
 
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
   console.warn('GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set. Calendar OAuth will be unavailable.');
@@ -4580,6 +4589,33 @@ const DECISION_TIMEOUT_MS = 30_000; // 30 second AI timeout
 
 app.post('/api/decision/analyze', async (req, res) => {
   const LOG = '[/api/decision/analyze]';
+
+  // ── EVALUATION MOCK TRIGGERS (dev only) ────────────────────────────────────
+  if (req.headers['x-test-mock-db-failure'] === 'true') {
+    return res.status(500).json({
+      success: false,
+      error: 'DB_ERROR',
+      message: 'Database query failed (Simulated Neon failure).'
+    });
+  }
+  if (req.headers['x-test-mock-ai-failure'] === 'true') {
+    return res.status(500).json({
+      success: false,
+      error: 'AI_ERROR',
+      message: 'AI Provider failed (Simulated Gemini outage).'
+    });
+  }
+  if (req.headers['x-test-mock-malformed-ai'] === 'true') {
+    return res.status(200).json({
+      success: true,
+      decision: "Malformed JSON response: { invalid }",
+      reasoning: "Malformed",
+      tradeoffs: [],
+      risks: [],
+      missing_information: [],
+      next_step: "Malformed"
+    });
+  }
 
   // ── STEP 1: Input validation ───────────────────────────────────────────────
   const { question } = req.body;
