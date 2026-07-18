@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "start": "npm run start --prefix backend",
-    "build": "npm ci --prefix backend"
+    "build": "npm ci --prefix backend",
+    "postinstall": "npm ci --prefix backend"
   }
 }
