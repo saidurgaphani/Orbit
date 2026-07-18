@@ -2,12 +2,11 @@ services:
   - type: web
     name: orbit-backend
     env: node
-    buildCommand: npm --prefix backend install && npm run --prefix backend db:push
-    startCommand: npm --prefix backend run start
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATABASE_URL
-        fromSecret: DATABASE_URL
     autoDeploy: true
     healthCheckPath: /health
