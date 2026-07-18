@@ -461,7 +461,8 @@ app.get('/auth/google', async (req, res) => {
   }
 
   const firebaseUid = firebaseUser.localId;
-  const referer = req.query.referer || req.headers.referer || 'http://localhost:5174/app';
+  const defaultReferer = process.env.FRONTEND_URL || 'http://localhost:5174/app';
+  const referer = req.query.referer || req.headers.referer || defaultReferer;
 
   // Generate a cryptographically secure, random state token
   const state = crypto.randomBytes(32).toString('hex');
