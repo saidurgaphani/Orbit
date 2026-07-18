@@ -31,6 +31,7 @@ const MAX_VAULT_DOCS = 100;
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+const IS_PROD = process.env.NODE_ENV === 'production';
 
 const allowedOrigins = [
   'http://localhost:5173',
@@ -42,6 +43,16 @@ const allowedOrigins = [
   // Support any additional origins via env variable (comma-separated)
   ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : []),
 ];
+
+// Build a Set-Cookie string that works cross-origin in production
+function buildCookie(name, value, maxAge) {
+  let cookie = `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly`;
+  if (IS_PROD) {
+    // SameSite=None + Secure required for cross-site cookies (Vercel → Render)
+    cookie += '; SameSite=None; Secure';
+  }
+  return cookie;
+}
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
@@ -389,7 +400,7 @@ app.post('/api/auth/session', async (req, res) => {
   };
   saveSessions();
 
-  res.setHeader('Set-Cookie', `session_token=${sessionToken}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly`);
+  res.setHeader('Set-Cookie', buildCookie('session_token', sessionToken, 30 * 24 * 3600));
   res.json({ success: true, authenticated: true, user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl } });
 });
 
@@ -400,7 +411,7 @@ app.post('/api/auth/logout', (req, res) => {
     delete sessions[sessionToken];
     saveSessions();
   }
-  res.setHeader('Set-Cookie', `session_token=; Path=/; Max-Age=0; HttpOnly`);
+  res.setHeader('Set-Cookie', buildCookie('session_token', '', 0));
   res.json({ success: true });
 });
 
